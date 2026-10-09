@@ -3,6 +3,14 @@
 All notable changes to Claude Usage Widget. Versions follow [semantic versioning](https://semver.org/).
 Each version is a [GitHub release](https://github.com/mrcsXndr/claude-usage-widget/releases) with an installer.
 
+## [1.3.0] - 2026-10-10
+
+### Changed
+- The plan label (Pro, Max 5x, Max 20x) now comes from the API (`/api/oauth/profile`) for every token that can read it, on each refresh, so a plan upgrade shows without editing anything. The last good answer is kept when a call fails.
+
+### Added
+- A per-account Plan picker in Settings: Auto, Pro, Max 5x, Max 20x. Setup-tokens can't read their plan from the API (the profile endpoint returns 403 and no response header carries it), so for those accounts the picked plan is shown. The plan found when the account was added is the initial pick. Hover an account in the list to see where its plan came from.
+
 ## [1.2.2] - 2026-09-29
 
 ### Fixed

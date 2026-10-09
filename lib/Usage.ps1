@@ -17,6 +17,7 @@ $StatePath  = Join-Path $AppDir 'state.json'
 $LogPath    = Join-Path $AppDir 'widget.log'
 
 $UsageUrl   = 'https://api.anthropic.com/api/oauth/usage'
+$ProfileUrl = 'https://api.anthropic.com/api/oauth/profile'
 $ProbeUrl   = 'https://api.anthropic.com/v1/messages'
 $ProbeModel = 'claude-haiku-4-5-20251001'
 $FableModel = 'claude-fable-5-1'
@@ -24,7 +25,9 @@ $FableModel = 'claude-fable-5-1'
 $ClaudeCodeSystem = "You are Claude Code, Anthropic's official CLI for Claude."
 $LimitKeys  = @('5h', '7d', 'fable')
 $DefaultCaptions = [ordered]@{ '5h' = '5h'; '7d' = '7d'; 'fable' = 'Fable' }
-$AppVersion = '1.2.2'
+$AppVersion = '1.3.0'
+# Plans the settings picker offers; an empty plan means Auto (whatever the API reports).
+$PlanChoices = @('Pro', 'Max 5x', 'Max 20x')
 $UserAgent  = "claude-usage-widget/$AppVersion (+https://github.com/mrcsXndr/claude-usage-widget)"
 
 function Write-Log([string]$msg) {
@@ -91,7 +94,7 @@ function Get-LastLine([string]$text) {
 
 function Format-Plan($tier, $sub) {
   if ("$tier" -match 'max_(\d+x)') { return "Max $($Matches[1])" }
-  if ($sub) { return (Get-Culture).TextInfo.ToTitleCase("$sub") }
+  if ($sub) { return (Get-Culture).TextInfo.ToTitleCase(("$sub" -replace '^claude_', '')) }
   return $null
 }
 
@@ -291,6 +294,18 @@ function Read-UsageApi($client, [string]$token) {
   } finally { $res.Dispose() }
 }
 
+# The plan as the profile endpoint reports it (organization.rate_limit_tier, e.g. default_claude_max_20x,
+# and organization_type). Needs the same user:profile scope as the usage API, so setup-tokens get a 403
+# and no header on the probe carries the plan either. Returns $null when the API can't tell.
+function Read-ProfilePlan($client, [string]$token) {
+  $res = Send-Request $client 'GET' $ProfileUrl $token $null
+  try {
+    if ([int]$res.StatusCode -ne 200) { return $null }
+    $o = (ConvertFrom-Json $res.Content.ReadAsStringAsync().GetAwaiter().GetResult()).organization
+    return Format-Plan $o.rate_limit_tier $o.organization_type
+  } finally { $res.Dispose() }
+}
+
 # 1-token request; the numbers ride on the response headers (also on a 429).
 function Read-Probe($client, [string]$token, [string]$model = $ProbeModel) {
   $req = [ordered]@{ model = $model; max_tokens = 1; messages = @(@{ role = 'user'; content = '.' }) }
@@ -327,7 +342,7 @@ function Get-AllUsage($Config, [hashtable]$MethodCache = @{}) {
   try {
     foreach ($a in @($Config.accounts)) {
       $row = [ordered]@{
-        name = $a.name; label = $(if ($a.label) { $a.label } else { $a.name }); plan = $a.plan
+        name = $a.name; label = $(if ($a.label) { $a.label } else { $a.name }); plan = $a.plan; apiPlan = $null
         status = 'error'; error = $null; method = $null
         five_h = (New-Window $null $null); seven_d = (New-Window $null $null); fable = (New-Window $null $null)
       }
@@ -351,6 +366,12 @@ function Get-AllUsage($Config, [hashtable]$MethodCache = @{}) {
           }
           if (-not $r) { $r = Read-Probe $client $token $ProbeModel }
         }
+        # The plan comes from the API whenever the token may read it; the last good answer covers a failed call.
+        if ($MethodCache[$a.name] -ne 'probe') {
+          try { $p = Read-ProfilePlan $client $token; if ($p) { $MethodCache["$($a.name):plan"] = $p } } catch {}
+        }
+        $row.apiPlan = $MethodCache["$($a.name):plan"]
+        if ($row.apiPlan) { $row.plan = $row.apiPlan }
         if ($r.invalid) { $row.status = 'invalid'; $row.error = "token invalid (http $($r.http))" }
         elseif ($r.error) { $row.error = $r.error }
         else {

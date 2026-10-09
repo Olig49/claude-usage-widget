@@ -3,7 +3,7 @@
 Claude 5h / 7d / Fable usage as rings on the Windows 11 taskbar, with a per-account list and settings on click.
 It's plain PowerShell 5.1 + WPF, with no dependencies. Public repo; each version ships as a GitHub release with an installer.
 
-Status (2026-09-29): **v1.2.2 released**. The project is feature-complete for now; see "Open items" below.
+Status (2026-10-10): **v1.3.0 released**. The project is feature-complete for now; see "Open items" below.
 
 ## Layout
 
@@ -23,6 +23,7 @@ Status (2026-09-29): **v1.2.2 released**. The project is feature-complete for no
   - The widget sends a `max_tokens: 1` request and reads `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset}` (0-1 fraction, unix seconds).
   - It probes **Fable** (`claude-fable-5-1`) because only then does the reply include the Fable bucket header `7d_oi`. Non-Haiku models need the Claude Code system prompt with OAuth tokens. If Fable fails, it falls back to Haiku.
   - `MethodCache` remembers which accounts must use the probe.
+- **Plan label:** `GET /api/oauth/profile` (`organization.rate_limit_tier` like `default_claude_max_20x`, `organization_type` like `claude_max`) on each refresh for tokens with `user:profile`; the last good answer is cached in `MethodCache["<name>:plan"]`. Setup-tokens get a 403 there and no probe header carries the plan (checked 2026-10-10), so the account's `plan` config field (the Settings picker; empty = Auto) is the fallback. The API value always wins.
 - Claude Code logins are **read-only**: never refresh them, because refresh-token rotation would log Claude Code out. An expired login shows "open Claude Code to renew".
 - Token sources: `claude-code` (+`dir`), `xndr-claude` (`xndr-claude token <name>`), `command`, `env`. Tokens are never logged, written or passed as arguments.
 

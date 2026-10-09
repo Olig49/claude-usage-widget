@@ -134,6 +134,8 @@ function Get-AcctCfg($name) { Get-AcctCfgs | Where-Object name -eq $name | Selec
 function Get-Visible { @(Get-AcctCfgs | Where-Object { $_.hidden -ne $true }) }
 function Get-Result($name) { $script:accounts | Where-Object name -eq $name | Select-Object -First 1 }
 function Get-Label($cfg) { if ("$($cfg.label)".Trim()) { "$($cfg.label)".Trim() } else { "$($cfg.name)" } }
+# The API's plan wins; the plan picked in settings (at first, the one found at discovery) covers tokens it can't read.
+function Get-Plan($cfg, $res) { if ($res.apiPlan) { "$($res.apiPlan)" } elseif ("$($cfg.plan)".Trim()) { "$($cfg.plan)".Trim() } else { $null } }
 
 function Get-Caption($key) {
   $c = "$($script:config.captions.$key)".Trim()
@@ -289,7 +291,7 @@ function Set-DemoData {
     )
   }
   $script:accounts = @(
-    [pscustomobject]@{ name = 'personal'; status = 'ok'; error = $null; method = 'usage-api'; five_h = (& $w 64 72); seven_d = (& $w 43 1574); fable = (& $w 38 1574) }
+    [pscustomobject]@{ name = 'personal'; status = 'ok'; error = $null; method = 'usage-api'; apiPlan = 'Max 20x'; five_h = (& $w 64 72); seven_d = (& $w 43 1574); fable = (& $w 38 1574) }
     [pscustomobject]@{ name = 'work'; status = 'ok'; error = $null; method = 'probe'; five_h = (& $w 12 282); seven_d = (& $w 30 6060); fable = (& $w 56 6060) }
     [pscustomobject]@{ name = 'side'; status = 'limited'; error = $null; method = 'probe'; five_h = (& $w 100 38); seven_d = (& $w 71 2900); fable = (& $w $null $null) }
   )
@@ -443,7 +445,8 @@ function New-CombinedElement($cfg, $res) {
 function Get-AccountTip($cfg, $res) {
   $tip = @()
   if ($cfg) {
-    $tip += (Get-Label $cfg) + $(if ($cfg.plan) { " $DOT $($cfg.plan)" })
+    $plan = Get-Plan $cfg $res
+    $tip += (Get-Label $cfg) + $(if ($plan) { " $DOT $plan" })
     foreach ($k in $LimitKeys) {
       $w = Get-Win $res $k
       if ($w -and $null -ne $w.pct) { $tip += "$(Get-Caption $k)  $(Format-Pct $w.pct)%  $DOT  resets $(Format-Reset $w.reset)" }
@@ -723,12 +726,20 @@ function Get-Note($res) {
 function New-AccountRow($cfg, $shownNames) {
   $res = Get-Result $cfg.name
   $label = Esc (Get-Label $cfg)
-  $plan = Esc $(if ($cfg.plan) { "   $($cfg.plan)" } else { '' })
+  $plan = Esc $(if (Get-Plan $cfg $res) { "   $(Get-Plan $cfg $res)" } else { '' })
   if ($script:editing) {
     $limits = @(Get-TaskbarLimits $cfg)
     $combined = $cfg.style -eq 'combined'
     $pie = if ($cfg.pie -eq '7d') { '7d' } else { '5h' }
     $id = [regex]::Replace("$($cfg.name)", '[^A-Za-z0-9_]', '_')
+    # Plan picker: Auto ('') plus the fixed choices, plus a custom plan from the config so it isn't lost.
+    $planOpts = @('') + $PlanChoices
+    $curPlan = "$($cfg.plan)".Trim()
+    if ($curPlan -and $PlanChoices -notcontains $curPlan) { $planOpts += $curPlan }
+    $planBoxes = (0..($planOpts.Count - 1) | ForEach-Object {
+      "<RadioButton Name=`"PL_$_`" Style=`"{DynamicResource Seg}`" GroupName=`"plan_$id`" Content=`"$(Esc $(if ($planOpts[$_]) { $planOpts[$_] } else { 'Auto' }))`" IsChecked=`"$($planOpts[$_] -eq $curPlan)`"/>"
+    }) -join ''
+    $planApi = if ($res.apiPlan) { 'API: yes' } elseif ($res) { 'API: n/a' } else { '' }
     $ringBoxes = ($LimitKeys | ForEach-Object {
       "<CheckBox Name=`"L_$_`" Content=`"$(Esc (Get-Caption $_))`" Margin=`"0,0,14,0`" IsChecked=`"$(if ($limits -contains $_) { 'True' } else { 'False' })`"/>"
     }) -join ''
@@ -737,7 +748,7 @@ function New-AccountRow($cfg, $shownNames) {
   <StackPanel>
     <DockPanel>
       <CheckBox Name="Tb" DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,10,0" ToolTip="Show on the taskbar"/>
-      <TextBlock DockPanel.Dock="Right" Text="$plan" FontSize="11" Foreground="$($Theme.sub)" VerticalAlignment="Center" Margin="6,0,0,0"/>
+      <TextBlock Name="PlanText" DockPanel.Dock="Right" Text="$plan" FontSize="11" Foreground="$($Theme.sub)" VerticalAlignment="Center" Margin="6,0,0,0"/>
       <TextBox Name="Label" Text="$label" ToolTip="Account name"/>
     </DockPanel>
     <DockPanel Margin="26,9,0,0">
@@ -747,6 +758,11 @@ function New-AccountRow($cfg, $shownNames) {
         <RadioButton Name="S_combined" Style="{DynamicResource Seg}" GroupName="style_$id" Content="Combined" IsChecked="$combined"/>
       </StackPanel>
     </DockPanel>
+    <WrapPanel Margin="26,8,0,0" ToolTip="Auto shows the plan the API reports. Setup-tokens can't read it, so pick it here.">
+      <TextBlock Text="Plan" Width="48" FontSize="11" Foreground="$($Theme.sub)" VerticalAlignment="Center"/>
+      $planBoxes
+      <TextBlock Text="$(Esc $planApi)" FontSize="10.5" Foreground="$($Theme.sub)" VerticalAlignment="Center" Margin="2,0,0,0"/>
+    </WrapPanel>
     <WrapPanel Name="RingsPanel" Margin="26,8,0,0" Visibility="$(if ($combined) { 'Collapsed' } else { 'Visible' })">
       <TextBlock Text="Rings" Width="48" FontSize="11" Foreground="$($Theme.sub)" VerticalAlignment="Center"/>
       $ringBoxes
@@ -785,6 +801,17 @@ function New-AccountRow($cfg, $shownNames) {
       $rb.Tag = @{ name = $cfg.name; value = $opt }
       $rb.Add_Checked({ param($s) Set-AcctProp $s.Tag.name 'pie' $s.Tag.value; Save-UiConfig; Update-Widget })
     }
+    for ($i = 0; $i -lt $planOpts.Count; $i++) {
+      $rb = $row.FindName("PL_$i")
+      $rb.Tag = @{ name = $cfg.name; value = $planOpts[$i]; row = $row }
+      $rb.Add_Checked({
+        param($s)
+        Set-AcctProp $s.Tag.name 'plan' $s.Tag.value
+        $shown = Get-Plan (Get-AcctCfg $s.Tag.name) (Get-Result $s.Tag.name)
+        $s.Tag.row.FindName('PlanText').Text = if ($shown) { "   $shown" } else { '' }
+        Save-UiConfig; Update-Widget
+      })
+    }
   } else {
     $note = Get-Note $res
     $bars = (Get-BarXaml '5h' (Get-Win $res '5h')) + (Get-BarXaml '7d' (Get-Win $res '7d'))
@@ -806,7 +833,9 @@ function New-AccountRow($cfg, $shownNames) {
 </Border>
 "@)
     $via = switch ($res.method) { 'usage-api' { 'Read via the usage API (free)' } 'probe' { 'Read via a 1-token probe (setup-tokens cannot use the usage API)' } default { $null } }
-    if ($via) { $row.ToolTip = $via }
+    $planVia = if ($res.apiPlan) { 'Plan read from the API' } elseif ($res -and $cfg.plan) { "Plan set in settings (the API doesn't report it for this token)" }
+    $tipLines = @($via, $planVia) | Where-Object { $_ }
+    if ($tipLines) { $row.ToolTip = $tipLines -join "`n" }
     $row.Add_MouseEnter({ param($s) $s.Background = $Theme.hover })
     $row.Add_MouseLeave({ param($s) $s.Background = 'Transparent' })
   }
@@ -860,7 +889,7 @@ function Update-Popup {
     $script:loadingCaptions = $false
   }
   $PopupEls.Footer.Text = if ($script:editing) {
-    "Tick an account to show it on the taskbar. Rings shows one ring per limit; Combined shows 5h and 7d in one dial. The list always shows every limit."
+    "Tick an account to show it on the taskbar. Rings shows one ring per limit; Combined shows 5h and 7d in one dial. The list always shows every limit. Plan: Auto shows what the API reports; setup-tokens can't read it, so pick theirs."
   } else {
     "Tick accounts to show them on the taskbar $DOT Ctrl+drag the rings to move them"
   }
