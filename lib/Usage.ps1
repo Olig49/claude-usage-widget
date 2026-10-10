@@ -25,7 +25,7 @@ $FableModel = 'claude-fable-5-1'
 $ClaudeCodeSystem = "You are Claude Code, Anthropic's official CLI for Claude."
 $LimitKeys  = @('5h', '7d', 'fable')
 $DefaultCaptions = [ordered]@{ '5h' = '5h'; '7d' = '7d'; 'fable' = 'Fable' }
-$AppVersion = '1.6.0'
+$AppVersion = '1.7.0'
 # Self-update: the latest-release API and the one installer URL "Update now" may run.
 $ReleaseApiUrl = 'https://api.github.com/repos/mrcsXndr/claude-usage-widget/releases/latest'
 $InstallerUrl  = 'https://github.com/mrcsXndr/claude-usage-widget/releases/latest/download/install.ps1'
@@ -53,8 +53,9 @@ function Get-XndrClaudeHome {
 function Test-Command([string]$name) { [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 
 # Runs a command line through cmd (so npm shims and PATH lookups work) and captures its output.
-function Invoke-Captured([string]$commandLine, [int]$timeoutSec = 30) {
+function Invoke-Captured([string]$commandLine, [int]$timeoutSec = 30, [string]$stdin) {
   $psi = New-Object System.Diagnostics.ProcessStartInfo
+  if ($stdin) { $psi.RedirectStandardInput = $true }
   $psi.FileName = $env:ComSpec
   $psi.Arguments = "/d /s /c `"$commandLine`""
   $psi.UseShellExecute = $false
@@ -64,6 +65,12 @@ function Invoke-Captured([string]$commandLine, [int]$timeoutSec = 30) {
   $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
   $p = [Diagnostics.Process]::Start($psi)
   try {
+    if ($stdin) {
+      # Raw UTF-8 bytes (no BOM) so a secret goes to the child without touching argv.
+      $b = (New-Object Text.UTF8Encoding $false).GetBytes($stdin)
+      $p.StandardInput.BaseStream.Write($b, 0, $b.Length)
+      $p.StandardInput.Close()
+    }
     $out = $p.StandardOutput.ReadToEndAsync()
     $err = $p.StandardError.ReadToEndAsync()
     if (-not $p.WaitForExit($timeoutSec * 1000)) {
@@ -257,6 +264,13 @@ function Set-UserEnvToken([string]$name, [string]$value) {
 function Remove-UserEnvToken([string]$name) {
   if ($name -notmatch '^CLAUDE_USAGE_TOKEN_[A-Z0-9_]+$') { throw 'bad variable name' }
   [Environment]::SetEnvironmentVariable($name, [NullString]::Value, 'User')
+}
+
+# Stores a token with `xndr-claude add <name> --stdin`; the token goes over stdin only.
+function Save-XndrClaudeToken([string]$name, [string]$token) {
+  if ($name -notmatch '^[A-Za-z0-9._-]+$') { throw 'bad xndr-claude account name' }
+  $r = Invoke-Captured "xndr-claude add $name --stdin" 30 $token
+  if ($r.exit -ne 0) { throw "xndr-claude add failed ($($r.exit))" }
 }
 
 function Get-CommandToken([string]$commandLine) {
