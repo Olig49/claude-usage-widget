@@ -70,7 +70,7 @@ The widget finds accounts on its own:
 - **Claude Code logins.** It reads `%USERPROFILE%\.claude\.credentials.json`, which is where Claude Code keeps its login on Windows. It also checks any other `.claude*` folder in your user profile (for example one per account set up with `CLAUDE_CONFIG_DIR`). Accounts are named after the email they're logged in with.
 - **[xndr-claude](https://github.com/mrcsXndr/xndr-claude)** accounts, if it's installed.
 
-After you log in to another account, right-click the rings and choose **Scan for accounts**. If the same account turns up twice, you can hide one of them by adding `"hidden": true` to it in the config file (see below).
+You can also manage accounts from **Settings** (the cog): **Find new accounts** lists logins not added yet, **Add account** takes a name, a source (Claude Code login folder, xndr-claude account or env var) and a plan, and the bin removes one. Save keeps the changes. After you log in to another account, right-click the rings and choose **Scan for accounts**. If the same account turns up twice, you can hide one of them by adding `"hidden": true` to it in the config file (see below).
 
 <details>
 <summary>Other token sources (config file)</summary>

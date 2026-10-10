@@ -665,6 +665,14 @@ function Set-WidgetPosition {
       </DockPanel>
       <StackPanel x:Name="List"/>
       <StackPanel x:Name="CaptionPanel" Margin="10,10,10,2" Visibility="Collapsed">
+        <TextBlock Text="Accounts" FontSize="11" Foreground="$($Theme.sub)" Margin="0,0,0,6"/>
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+          <Button x:Name="FindBtn" Style="{StaticResource TextBtn}" Content="Find new accounts" Margin="-6,0,0,0"/>
+          <Button x:Name="AddBtn" Style="{StaticResource TextBtn}" Content="Add account"/>
+        </StackPanel>
+        <TextBlock x:Name="AcctMsg" FontSize="11" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed"/>
+        <StackPanel x:Name="AcctTools"/>
+        <Border Height="1" Background="$($Theme.border)" Margin="0,12,0,12"/>
         <TextBlock Text="Display" FontSize="11" Foreground="$($Theme.sub)" Margin="0,0,0,8"/>
         <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
           <CheckBox x:Name="OptNames" Content="Account names" Margin="0,0,18,0"/>
@@ -690,7 +698,7 @@ function Set-WidgetPosition {
 "@
 $popup = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $popupXaml))
 $PopupEls = @{}
-foreach ($n in 'Card', 'Slide', 'RefreshBtn', 'EditBtn', 'SaveBtn', 'CancelBtn', 'Title', 'Status', 'List', 'CaptionPanel', 'Cap_5h', 'Cap_7d', 'Cap_fable', 'OptNames', 'OptCaptions', 'OptAnim', 'OptRefresh', 'Footer') { $PopupEls[$n] = $popup.FindName($n) }
+foreach ($n in 'Card', 'Slide', 'RefreshBtn', 'EditBtn', 'SaveBtn', 'CancelBtn', 'Title', 'Status', 'List', 'CaptionPanel', 'Cap_5h', 'Cap_7d', 'Cap_fable', 'OptNames', 'OptCaptions', 'OptAnim', 'OptRefresh', 'Footer', 'FindBtn', 'AddBtn', 'AcctMsg', 'AcctTools') { $PopupEls[$n] = $popup.FindName($n) }
 $script:editing = $false
 
 function Get-BarXaml($key, $win) {
@@ -748,6 +756,11 @@ function New-AccountRow($cfg, $shownNames) {
   <StackPanel>
     <DockPanel>
       <CheckBox Name="Tb" DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,10,0" ToolTip="Show on the taskbar"/>
+      <Button Name="Del" DockPanel.Dock="Right" Style="{DynamicResource IconBtn}" Content="&#xE74D;" ToolTip="Remove this account from the widget (your login is untouched)"/>
+      <StackPanel Name="DelConfirm" DockPanel.Dock="Right" Orientation="Horizontal" Visibility="Collapsed">
+        <Button Name="DelYes" Style="{DynamicResource TextBtn}" Content="Remove"/>
+        <Button Name="DelNo" Style="{DynamicResource TextBtn}" Content="Keep"/>
+      </StackPanel>
       <TextBlock Name="PlanText" DockPanel.Dock="Right" Text="$plan" FontSize="11" Foreground="$($Theme.sub)" VerticalAlignment="Center" Margin="6,0,0,0"/>
       <TextBox Name="Label" Text="$label" ToolTip="Account name"/>
     </DockPanel>
@@ -776,6 +789,15 @@ function New-AccountRow($cfg, $shownNames) {
   </StackPanel>
 </Border>
 "@)
+    $del = $row.FindName('Del')
+    $del.Tag = $row
+    $del.Add_Click({ param($s) $s.Visibility = 'Collapsed'; $s.Tag.FindName('DelConfirm').Visibility = 'Visible' })
+    $no = $row.FindName('DelNo')
+    $no.Tag = $row
+    $no.Add_Click({ param($s) $s.Tag.FindName('DelConfirm').Visibility = 'Collapsed'; $s.Tag.FindName('Del').Visibility = 'Visible' })
+    $yes = $row.FindName('DelYes')
+    $yes.Tag = $cfg.name
+    $yes.Add_Click({ param($s) Remove-Account $s.Tag })
     $tb = $row.FindName('Label')
     $tb.Tag = $cfg.name
     $tb.Add_TextChanged({ param($s) Set-AcctProp $s.Tag 'label' $s.Text; Save-UiConfig; Update-Widget })
@@ -887,9 +909,10 @@ function Update-Popup {
     $PopupEls.OptAnim.IsChecked = Test-Option 'animations'
     $PopupEls.OptRefresh.Text = "$(Get-RefreshMinutes)"
     $script:loadingCaptions = $false
+    Show-AcctTool
   }
   $PopupEls.Footer.Text = if ($script:editing) {
-    "Tick an account to show it on the taskbar. Rings shows one ring per limit; Combined shows 5h and 7d in one dial. The list always shows every limit. Plan: Auto shows what the API reports; setup-tokens can't read it, so pick theirs."
+    "The bin removes an account from the widget only; your login stays. Tick an account to show it on the taskbar. Rings shows one ring per limit; Combined shows 5h and 7d in one dial. The list always shows every limit. Plan: Auto shows what the API reports; setup-tokens can't read it, so pick theirs."
   } else {
     "Tick accounts to show them on the taskbar $DOT Ctrl+drag the rings to move them"
   }
@@ -927,6 +950,313 @@ $PopupEls.OptRefresh.Add_TextChanged({
   }
 })
 $PopupEls.OptRefresh.Add_LostKeyboardFocus({ param($s) $s.Text = "$(Get-RefreshMinutes)" })
+
+# ---------------------------------------------------------------- account tools (Settings)
+# Find / Add / Remove change the in-memory config like every other Settings edit: Save keeps it,
+# Cancel drops it. Only references are stored (folder, xndr-claude name, env var name); a token is never read for display.
+
+$script:acctMode = $null      # 'find' | 'add' | $null
+$script:acctNote = $null
+$script:acctsChanged = $false
+$script:found = $null         # discovered accounts (Claude Code logins + xndr-claude), $null = not searched yet
+$script:findJob = $null
+$script:modal = $false
+$script:nf = @{ label = ''; src = 'claude-code'; input = ''; plan = '' }
+$script:nfEls = @{}
+
+function Test-AcctKnown($a) {
+  @(Get-AcctCfgs | Where-Object {
+    $_.name -eq $a.name -or ($_.source -eq 'claude-code' -and $a.source -eq 'claude-code' -and "$($_.dir)" -eq "$($a.dir)")
+  }).Count -gt 0
+}
+
+function Get-UniqueName([string]$base) {
+  $slug = ($base.ToLower() -replace '[^a-z0-9._-]+', '-').Trim('-')
+  if (-not $slug) { $slug = 'account' }
+  $name = $slug; $n = 2
+  while (Get-AcctCfg $name) { $name = "$slug-$n"; $n++ }
+  return $name
+}
+
+function Add-AcctCfg($a) {
+  $script:config.accounts = @(Get-AcctCfgs) + @([pscustomobject]$a)
+  $script:acctsChanged = $true
+}
+
+function Remove-Account([string]$name) {
+  $script:config.accounts = @(Get-AcctCfgs | Where-Object { $_.name -ne $name })
+  $script:acctsChanged = $true
+  $script:acctNote = "Removed. Save to keep it, Cancel to undo."
+  Update-Widget
+  Update-Popup
+}
+
+function Set-DemoFound {
+  $script:found = @(
+    [pscustomobject]@{ name = 'claude-code-work'; label = 'work@example.com'; plan = 'Max 5x'; source = 'claude-code'; dir = 'C:\Users\demo\.claude-work'; pick = $true; sel = 'Max 5x' }
+    [pscustomobject]@{ name = 'ci-bot'; label = 'CI bot'; plan = ''; source = 'xndr-claude'; pick = $false; sel = '' }
+  )
+}
+
+# Discovery can take a minute (xndr-claude probes each account), so it runs in a background runspace.
+function Start-Find {
+  if ($script:findJob) { return }
+  if ($Demo) { Set-DemoFound; return }
+  $ps = [PowerShell]::Create()
+  [void]$ps.AddScript({
+    param($lib)
+    $ErrorActionPreference = 'Stop'
+    . $lib
+    @(Find-ClaudeCodeLogins | ForEach-Object { [pscustomobject]$_ }) + @(Import-XndrClaudeAccounts | ForEach-Object { [pscustomobject]$_ })
+  }).AddArgument($LibPath)
+  $script:findJob = @{ ps = $ps; handle = $ps.BeginInvoke(); started = Get-Date }
+  $findTimer.Start()
+}
+
+function Complete-Find {
+  $j = $script:findJob
+  $timedOut = ((Get-Date) - $j.started).TotalSeconds -gt 90
+  if (-not $timedOut -and -not $j.handle.IsCompleted) { return }
+  $findTimer.Stop()
+  $script:findJob = $null
+  $list = @()
+  try {
+    if ($timedOut) { $j.ps.Stop(); throw 'account search timed out' }
+    $list = @($j.ps.EndInvoke($j.handle) | Where-Object { $_ })
+  } catch {
+    $e = $_.Exception
+    while ($e.InnerException) { $e = $e.InnerException }
+    Write-Log "find accounts: $($e.Message)"
+    $script:acctNote = "Search failed: $($e.Message)"
+  } finally { $j.ps.Dispose() }
+  foreach ($a in $list) {
+    $a | Add-Member -Force -NotePropertyName pick -NotePropertyValue $false
+    $a | Add-Member -Force -NotePropertyName sel -NotePropertyValue "$($a.plan)".Trim()
+  }
+  $script:found = $list
+  if ($script:editing -and $popup.IsVisible) { Show-AcctTool }
+}
+
+function Get-PlanSegXaml([string]$prefix, [string]$cur) {
+  $opts = @('') + $PlanChoices
+  (0..($opts.Count - 1) | ForEach-Object {
+    "<RadioButton Name=`"$($prefix)_$_`" Style=`"{DynamicResource Seg}`" GroupName=`"$prefix`" Content=`"$(if ($opts[$_]) { Esc $opts[$_] } else { 'Auto' })`" IsChecked=`"$($opts[$_] -eq $cur)`"/>"
+  }) -join ''
+}
+
+function New-ToolBar([string]$addText, [scriptblock]$onAdd) {
+  $bar = [Windows.Markup.XamlReader]::Parse(@"
+<StackPanel $ns Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+  <Button Name="TClose" Style="{DynamicResource TextBtn}" Content="Close"/>
+  $(if ($addText) { "<Button Name=`"TAdd`" Style=`"{DynamicResource AccentBtn}`" Content=`"$addText`"/>" })
+</StackPanel>
+"@)
+  $bar.FindName('TClose').Add_Click({ $script:acctMode = $null; Show-AcctTool })
+  if ($addText) { $bar.FindName('TAdd').Add_Click($onAdd) }
+  return $bar
+}
+
+function Show-AcctTool {
+  $pan = $PopupEls.AcctTools
+  $pan.Children.Clear()
+  $PopupEls.AcctMsg.Text = "$($script:acctNote)"
+  $PopupEls.AcctMsg.Visibility = if ($script:acctNote) { 'Visible' } else { 'Collapsed' }
+  if ($script:acctMode -eq 'find') { Show-FindTool $pan }
+  elseif ($script:acctMode -eq 'add') { Show-AddTool $pan }
+}
+
+function Show-FindTool($pan) {
+  $hd = New-Object Windows.Controls.TextBlock -Property @{ FontSize = 11.5; Foreground = $Theme.fg; Margin = '0,8,0,2'; TextWrapping = 'Wrap' }
+  [void]$pan.Children.Add($hd)
+  if ($script:findJob -or $null -eq $script:found) { $hd.Text = "Searching for accounts$ELL"; return }
+  $new = @($script:found | Where-Object { -not (Test-AcctKnown $_) })
+  if (-not $new.Count) { $hd.Text = 'No new accounts found.'; [void]$pan.Children.Add((New-ToolBar $null $null)); return }
+  $hd.Text = "Found $($new.Count) not in the widget yet. Tick the ones to add:"
+  for ($i = 0; $i -lt $new.Count; $i++) {
+    $a = $new[$i]
+    $plan = "$($a.plan)".Trim()
+    $from = if ($a.source -eq 'xndr-claude') { 'xndr-claude account' } else { "Claude Code login$(if ($a.dir) { ' ' + $a.dir } else { '' })" }
+    $planPick = if (-not $plan) {
+      "<WrapPanel Margin=`"22,4,0,0`"><TextBlock Text=`"Plan`" Width=`"34`" FontSize=`"11`" Foreground=`"$($Theme.sub)`" VerticalAlignment=`"Center`"/>$(Get-PlanSegXaml "PF$i" '')</WrapPanel>"
+    } else { '' }
+    $row = [Windows.Markup.XamlReader]::Parse(@"
+<StackPanel $ns Margin="0,5,0,0">
+  <CheckBox Name="CK"><TextBlock TextTrimming="CharacterEllipsis"><Run Text="$(Esc (Get-Label $a))" FontWeight="SemiBold"/><Run Text="$(Esc $(if ($plan) { "   $plan" } else { '' }))" Foreground="$($Theme.sub)"/></TextBlock></CheckBox>
+  <TextBlock Text="$(Esc $from)" Margin="22,1,0,0" FontSize="10.5" Foreground="$($Theme.sub)" TextTrimming="CharacterEllipsis"/>
+  $planPick
+</StackPanel>
+"@)
+    $ck = $row.FindName('CK')
+    $ck.Tag = $a
+    $ck.IsChecked = [bool]$a.pick
+    $ck.Add_Click({ param($s) $s.Tag.pick = [bool]$s.IsChecked })
+    if (-not $plan) {
+      $opts = @('') + $PlanChoices
+      for ($k = 0; $k -lt $opts.Count; $k++) {
+        $rb = $row.FindName("PF$($i)_$k")
+        $rb.Tag = @{ a = $a; v = $opts[$k] }
+        $rb.Add_Checked({ param($s) $s.Tag.a.sel = $s.Tag.v })
+      }
+    }
+    [void]$pan.Children.Add($row)
+  }
+  [void]$pan.Children.Add((New-ToolBar 'Add ticked' {
+    $n = 0
+    foreach ($a in @($script:found)) {
+      if (-not $a.pick -or (Test-AcctKnown $a)) { continue }
+      $o = [ordered]@{ name = $a.name; label = $a.label; plan = "$($a.sel)"; source = $a.source }
+      if ($a.dir) { $o.dir = $a.dir }
+      Add-AcctCfg $o
+      $n++
+    }
+    if ($n) {
+      $script:acctNote = "Added $n account$(if ($n -ne 1) { 's' }). Save to keep $(if ($n -ne 1) { 'them' } else { 'it' })."
+      $script:acctMode = $null
+      Update-Widget
+      Update-Popup
+    } else {
+      $script:acctNote = 'Nothing ticked.'
+      Show-AcctTool
+    }
+  }))
+}
+
+function Update-NfSource {
+  $e = $script:nfEls; $src = $script:nf.src
+  $e.hint.Text = switch ($src) { 'claude-code' { 'Folder' } 'xndr-claude' { 'Account' } default { 'Variable' } }
+  $e.note.Text = switch ($src) {
+    'claude-code' { 'Folder holding .credentials.json. Empty = your default Claude Code login (~\.claude).' }
+    'xndr-claude' { 'Name of an xndr-claude account.' }
+    default       { 'Name of an environment variable that holds a token. Its value is never shown.' }
+  }
+  $e.browse.Visibility = if ($src -eq 'claude-code') { 'Visible' } else { 'Collapsed' }
+  $e.chips.Visibility = if ($src -eq 'xndr-claude' -and $e.chips.Children.Count) { 'Visible' } else { 'Collapsed' }
+}
+
+function Show-AddTool($pan) {
+  $nf = $script:nf
+  $srcBoxes = (@(@('claude-code', 'Claude Code login'), @('xndr-claude', 'xndr-claude'), @('env', 'Env var')) | ForEach-Object {
+    "<RadioButton Name=`"NS_$($_[0] -replace '\W', '_')`" Style=`"{DynamicResource Seg}`" GroupName=`"nfsrc`" Content=`"$($_[1])`" IsChecked=`"$($nf.src -eq $_[0])`"/>"
+  }) -join ''
+  $form = [Windows.Markup.XamlReader]::Parse(@"
+<StackPanel $ns Margin="0,8,0,0">
+  <DockPanel><TextBlock Text="Name" Width="56" FontSize="11" Foreground="$($Theme.sub)" VerticalAlignment="Center"/><TextBox Name="NfLabel" Text="$(Esc $nf.label)" ToolTip="Shown in the list and on the taskbar. Optional."/></DockPanel>
+  <StackPanel Orientation="Horizontal" Margin="0,8,0,0"><TextBlock Text="Source" Width="56" FontSize="11" Foreground="$($Theme.sub)" VerticalAlignment="Center"/>$srcBoxes</StackPanel>
+  <DockPanel Margin="0,8,0,0">
+    <TextBlock Name="NfHint" Width="56" FontSize="11" Foreground="$($Theme.sub)" VerticalAlignment="Center"/>
+    <Button Name="NfBrowse" DockPanel.Dock="Right" Style="{DynamicResource TextBtn}" Content="Browse$ELL"/>
+    <TextBox Name="NfInput" Text="$(Esc $nf.input)"/>
+  </DockPanel>
+  <WrapPanel Name="NfChips" Margin="56,6,0,0"/>
+  <TextBlock Name="NfNote" Margin="56,4,0,0" FontSize="10.5" Foreground="$($Theme.sub)" TextWrapping="Wrap"/>
+  <WrapPanel Margin="0,8,0,0" ToolTip="Auto uses the plan of a Claude Code login, else whatever the API reports.">
+    <TextBlock Text="Plan" Width="56" FontSize="11" Foreground="$($Theme.sub)" VerticalAlignment="Center"/>$(Get-PlanSegXaml 'NP' $nf.plan)
+  </WrapPanel>
+  <TextBlock Name="NfMsg" Margin="0,6,0,0" FontSize="11" Foreground="$($Colors.bad)" TextWrapping="Wrap" Visibility="Collapsed"/>
+</StackPanel>
+"@)
+  $script:nfEls = @{
+    hint = $form.FindName('NfHint'); note = $form.FindName('NfNote'); browse = $form.FindName('NfBrowse')
+    chips = $form.FindName('NfChips'); input = $form.FindName('NfInput'); label = $form.FindName('NfLabel'); msg = $form.FindName('NfMsg')
+  }
+  $script:nfEls.label.Add_TextChanged({ param($s) $script:nf.label = $s.Text })
+  $script:nfEls.input.Add_TextChanged({ param($s) $script:nf.input = $s.Text })
+  foreach ($src in 'claude-code', 'xndr-claude', 'env') {
+    $rb = $form.FindName('NS_' + ($src -replace '\W', '_'))
+    $rb.Tag = $src
+    $rb.Add_Checked({ param($s) $script:nf.src = $s.Tag; $script:nfEls.input.Text = ''; Update-NfSource })
+  }
+  $opts = @('') + $PlanChoices
+  for ($k = 0; $k -lt $opts.Count; $k++) {
+    $rb = $form.FindName("NP_$k")
+    $rb.Tag = $opts[$k]
+    $rb.Add_Checked({ param($s) $script:nf.plan = $s.Tag })
+  }
+  # Names of xndr-claude accounts found by the search that the widget doesn't have yet.
+  foreach ($a in @($script:found | Where-Object { $_.source -eq 'xndr-claude' -and -not (Test-AcctKnown $_) })) {
+    $b = New-Object Windows.Controls.Button -Property @{ Content = $a.name; Tag = $a.name; Style = $PopupEls.Card.FindResource('TextBtn') }
+    $b.Add_Click({ param($s) $script:nfEls.input.Text = $s.Tag; if (-not $script:nfEls.label.Text.Trim()) { $script:nfEls.label.Text = $s.Tag } })
+    [void]$script:nfEls.chips.Children.Add($b)
+  }
+  $script:nfEls.browse.Add_Click({
+    Add-Type -AssemblyName System.Windows.Forms
+    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dlg.Description = 'Pick the folder that holds the Claude Code login (.credentials.json)'
+    $dlg.ShowNewFolderButton = $false
+    $dlg.SelectedPath = $HOME
+    # The dialog takes focus from the popup; without this the popup would close (and keep) the settings.
+    $script:modal = $true; $popup.Topmost = $false
+    try { if ($dlg.ShowDialog() -eq 'OK') { $script:nfEls.input.Text = $dlg.SelectedPath } }
+    finally { $dlg.Dispose(); $popup.Topmost = $true; $script:modal = $false; [void]$popup.Activate() }
+  })
+  Update-NfSource
+  [void]$pan.Children.Add($form)
+  [void]$pan.Children.Add((New-ToolBar 'Add' { Invoke-AddAccount }))
+}
+
+function Invoke-AddAccount {
+  $nf = $script:nf
+  $in = $nf.input.Trim(); $label = $nf.label.Trim()
+  $msg = $null; $detected = ''
+  $o = [ordered]@{ name = $null; label = $null; plan = ''; source = $nf.src }
+  switch ($nf.src) {
+    'claude-code' {
+      $default = [IO.Path]::GetFullPath((Join-Path $HOME '.claude')).TrimEnd('\')
+      $dir = ''
+      if ($in) { try { $dir = [IO.Path]::GetFullPath($in).TrimEnd('\') } catch { $msg = 'That is not a valid folder path.' } }
+      if ($dir -eq $default) { $dir = '' }
+      $login = if ($msg) { $null } else { Get-ClaudeCodeLogin $dir }
+      if (-not $msg -and -not $login) { $msg = 'No Claude Code login (.credentials.json) in that folder.' }
+      if (-not $msg) {
+        $detected = "$($login.plan)"; $login = $null
+        if (@(Get-AcctCfgs | Where-Object { $_.source -eq 'claude-code' -and "$($_.dir)" -eq $dir }).Count) { $msg = 'That login is already in the widget.' }
+      }
+      if (-not $msg) {
+        $id = Get-ClaudeCodeIdentity $(if ($dir) { $dir } else { $default })
+        $base = if ($dir) { 'claude-code-' + ((Split-Path $dir -Leaf) -replace '^\.claude[-_.]?', '') } else { 'claude-code' }
+        $o.name = Get-UniqueName $base
+        $o.label = if ($label) { $label } elseif ($id.emailAddress) { $id.emailAddress } else { 'Claude Code' }
+        if ($dir) { $o.dir = $dir }
+      }
+    }
+    'xndr-claude' {
+      if ($in -notmatch '^[A-Za-z0-9._-]+$') { $msg = 'Enter the xndr-claude account name (letters, digits, . _ -).' }
+      elseif (@(Get-AcctCfgs | Where-Object { $_.name -eq $in -or $_.account -eq $in }).Count) { $msg = 'That account is already in the widget.' }
+      else { $o.name = $in; $o.label = if ($label) { $label } else { $in } }
+    }
+    default {
+      if ($in -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { $msg = 'Enter the name of an environment variable, e.g. CLAUDE_TOKEN_WORK.' }
+      else {
+        $o.name = Get-UniqueName $(if ($label) { $label } else { $in })
+        $o.label = if ($label) { $label } else { $in }
+        $o.env = $in
+      }
+    }
+  }
+  if ($msg) {
+    $script:nfEls.msg.Text = $msg
+    $script:nfEls.msg.Visibility = 'Visible'
+    return
+  }
+  $o.plan = if ($nf.plan) { $nf.plan } else { $detected }
+  Add-AcctCfg $o
+  $script:nf = @{ label = ''; src = $nf.src; input = ''; plan = '' }
+  $script:acctNote = "Added $($o.label). Save to keep it."
+  $script:acctMode = $null
+  Update-Widget
+  Update-Popup
+}
+
+$PopupEls.FindBtn.Add_Click({
+  $script:acctMode = 'find'; $script:acctNote = $null; $script:found = $null
+  Start-Find
+  Show-AcctTool
+})
+$PopupEls.AddBtn.Add_Click({
+  $script:acctMode = 'add'; $script:acctNote = $null
+  if ($null -eq $script:found) { Start-Find }
+  Show-AcctTool
+})
 
 # The popup spans the work area's full height with the card pinned to the taskbar edge, so
 # switching between the list and settings never resizes (and never flickers) the window.
@@ -974,15 +1304,20 @@ function Switch-PopupMode([scriptblock]$change) {
 function Start-Editing {
   $script:configBackup = $script:config | ConvertTo-Json -Depth 8
   $script:editing = $true
+  $script:acctMode = $null; $script:acctNote = $null; $script:acctsChanged = $false
 }
 
 function Stop-Editing([bool]$keep) {
   if (-not $script:editing) { return }
   $script:editing = $false
+  $script:acctMode = $null; $script:acctNote = $null
   if ($keep) { Save-UiConfig }
   elseif ($script:configBackup) { $script:config = $script:configBackup | ConvertFrom-Json }
   $script:configBackup = $null
   Update-Widget
+  # New accounts have no numbers yet: read them now rather than at the next timer.
+  if ($keep -and $script:acctsChanged -and -not $Demo) { $script:lastTry = [DateTime]::MinValue; Start-Refresh }
+  $script:acctsChanged = $false
 }
 
 # Content and position are settled while the window is still fully transparent, so the first
@@ -1025,7 +1360,7 @@ function Hide-Popup {
 }
 
 $script:popupClosedAt = [DateTime]::MinValue
-$popup.Add_Deactivated({ Write-Trace 'popup deactivated'; Hide-Popup; $script:popupClosedAt = Get-Date })
+$popup.Add_Deactivated({ Write-Trace 'popup deactivated'; if ($script:modal) { return }; Hide-Popup; $script:popupClosedAt = Get-Date })
 $popup.Add_Activated({ Write-Trace 'popup activated' })
 $popup.Add_KeyDown({
   param($s, $e)
@@ -1168,6 +1503,12 @@ if ($Snapshot) {
   Set-DemoData
   Save-Snapshot $false (Join-Path $Snapshot 'widget.png')
   Save-Snapshot $true (Join-Path $Snapshot 'settings.png')
+  # Account tools open (used to check the layout; not part of the README).
+  Set-DemoFound
+  $script:acctMode = 'find'
+  Save-Snapshot $true (Join-Path $Snapshot 'settings-find.png')
+  $script:acctMode = 'add'
+  Save-Snapshot $true (Join-Path $Snapshot 'settings-add.png')
   exit
 }
 
@@ -1176,6 +1517,10 @@ if ($Snapshot) {
 $pollTimer = New-Object Windows.Threading.DispatcherTimer
 $pollTimer.Interval = [TimeSpan]::FromMilliseconds(250)
 $pollTimer.Add_Tick({ if ($script:job) { Complete-Refresh } else { $pollTimer.Stop() } })
+
+$findTimer = New-Object Windows.Threading.DispatcherTimer
+$findTimer.Interval = [TimeSpan]::FromMilliseconds(250)
+$findTimer.Add_Tick({ if ($script:findJob) { Complete-Find } else { $findTimer.Stop() } })
 
 $script:hwnd = [IntPtr]::Zero
 $topTimer = New-Object Windows.Threading.DispatcherTimer

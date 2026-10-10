@@ -25,7 +25,7 @@ $FableModel = 'claude-fable-5-1'
 $ClaudeCodeSystem = "You are Claude Code, Anthropic's official CLI for Claude."
 $LimitKeys  = @('5h', '7d', 'fable')
 $DefaultCaptions = [ordered]@{ '5h' = '5h'; '7d' = '7d'; 'fable' = 'Fable' }
-$AppVersion = '1.3.0'
+$AppVersion = '1.4.0'
 # Plans the settings picker offers; an empty plan means Auto (whatever the API reports).
 $PlanChoices = @('Pro', 'Max 5x', 'Max 20x')
 $UserAgent  = "claude-usage-widget/$AppVersion (+https://github.com/mrcsXndr/claude-usage-widget)"

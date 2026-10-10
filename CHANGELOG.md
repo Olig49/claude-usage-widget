@@ -3,6 +3,11 @@
 All notable changes to Claude Usage Widget. Versions follow [semantic versioning](https://semver.org/).
 Each version is a [GitHub release](https://github.com/mrcsXndr/claude-usage-widget/releases) with an installer.
 
+## [1.4.0] - 2026-10-10
+
+### Added
+- Account management in Settings. **Find new accounts** re-runs discovery and lists Claude Code logins and xndr-claude accounts that aren't in the widget yet; tick the ones to add (the plan comes from the login, else xndr-claude, else a picker). **Add account** takes a name, a source (Claude Code login folder with a Browse button, xndr-claude account, or env var name) and a plan. A bin on each account removes it, after a confirm. Like every Settings edit these apply on Save and are dropped on Cancel. Only references are stored; tokens are never shown.
+
 ## [1.3.0] - 2026-10-10
 
 ### Changed

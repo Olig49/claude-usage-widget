@@ -3,7 +3,7 @@
 Claude 5h / 7d / Fable usage as rings on the Windows 11 taskbar, with a per-account list and settings on click.
 It's plain PowerShell 5.1 + WPF, with no dependencies. Public repo; each version ships as a GitHub release with an installer.
 
-Status (2026-10-10): **v1.3.0 released**. The project is feature-complete for now; see "Open items" below.
+Status (2026-10-10): **v1.4.0 released** (Settings: find / add / remove accounts; the Browse folder dialog sets `$script:modal` so the popup's Deactivated handler doesn't close Settings). The project is feature-complete for now; see "Open items" below.
 
 ## Layout
 
