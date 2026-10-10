@@ -392,8 +392,8 @@ function Show-Toast([string]$title, [string]$text) {
 }
 
 function Set-DemoUpdate {
-  $script:update = [pscustomobject]@{ version = '1.6.0'; notes = "Self-update check with a tray notification`nFaster refresh on wake" }
-  $script:updMsg = if ($script:updManual) { 'v1.6.0 is available' }
+  $script:update = [pscustomobject]@{ version = '1.7.2'; notes = "Self-update check with a tray notification`nFaster refresh on wake" }
+  $script:updMsg = if ($script:updManual) { 'v1.7.2 is available' }
 }
 
 function Start-UpdateCheck([switch]$Manual) {
