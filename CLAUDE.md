@@ -3,7 +3,7 @@
 Claude 5h / 7d / Fable usage as rings on the Windows 11 taskbar, with a per-account list and settings on click.
 It's plain PowerShell 5.1 + WPF, with no dependencies. Public repo; each version ships as a GitHub release with an installer.
 
-Status (2026-10-10): **v1.4.0 released** (Settings: find / add / remove accounts; the Browse folder dialog sets `$script:modal` so the popup's Deactivated handler doesn't close Settings). The project is feature-complete for now; see "Open items" below.
+Status (2026-10-10): **v1.5.0 released** (self-update: daily GitHub release check, tray notification, "Update available" box, Update now runs the official `install.ps1` URL; state in `state.json` `updateCheckedAt` / `updateVersion` / `notifiedVersion` / `pendingUpdate`, setting `updateCheck` in config). v1.4.0 added Settings: find / add / remove accounts (the Browse folder dialog sets `$script:modal` so the popup's Deactivated handler doesn't close Settings). The project is feature-complete for now; see "Open items" below.
 
 ## Layout
 
@@ -63,5 +63,6 @@ The installers download `releases/latest`, so users only get tagged versions. **
 ## Open items
 
 - Untested: double-clicking `Install.cmd` from a downloaded ZIP on a fresh PC (SmartScreen / mark-of-the-web behaviour).
+- Untested end to end: "Update now" (needs a release newer than the installed copy) and the tray balloon's on-screen look (checked headless only).
 - Multi-monitor: the widget uses the primary screen's taskbar only.
 - Git Credential Manager hung once on push on the owner's PC (see step 3 of the release process).

@@ -89,6 +89,10 @@ if (-not $Demo) {
   try {
     $saved = Get-Content $StatePath -Raw | ConvertFrom-Json
     if ($null -ne $saved.right) { $script:state.right = $saved.right }
+    # Update check: when it last ran (unix seconds), the newer release found, which one was announced, which one is installing.
+    foreach ($k in 'updateCheckedAt', 'updateVersion', 'updateNotes', 'notifiedVersion', 'pendingUpdate') {
+      if ($null -ne $saved.$k) { $script:state[$k] = $saved.$k }
+    }
   } catch {}
 }
 
@@ -347,6 +351,129 @@ function Complete-Refresh {
   Update-All
 }
 
+# ---------------------------------------------------------------- updates
+# Once a day (and on "Check now" in Settings) the latest GitHub release is compared with $AppVersion.
+# A newer one gets a tray notification once and an "Update available" box in the popup; "Update now"
+# runs the official installer URL (and nothing else) in a separate process, which restarts the widget.
+
+$script:update = $null        # newer release: { version, notes }
+$script:updJob = $null
+$script:updManual = $false
+$script:updMsg = $null
+$script:updatingSince = $null
+$script:tray = $null
+if ($script:state.updateVersion -and (Test-NewerVersion "$($script:state.updateVersion)" $AppVersion)) {
+  $script:update = [pscustomobject]@{ version = "$($script:state.updateVersion)"; notes = "$($script:state.updateNotes)" }
+}
+
+function Test-UpdateDue {
+  if ($Demo -or $script:updJob -or -not (Test-Option 'updateCheck')) { return $false }
+  $last = if ($null -ne $script:state.updateCheckedAt) { [int64]$script:state.updateCheckedAt } else { 0 }
+  return ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $last) -ge 86400
+}
+
+# A tray balloon (a toast on Windows 10/11); clicking it opens the popup.
+function Show-Toast([string]$title, [string]$text) {
+  if ($Demo) { return }
+  try {
+    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+    if (-not $script:tray) {
+      $t = New-Object System.Windows.Forms.NotifyIcon
+      $ico = Join-Path $PSScriptRoot 'assets\icon.ico'
+      $t.Icon = if (Test-Path $ico) { New-Object System.Drawing.Icon $ico } else { [System.Drawing.SystemIcons]::Information }
+      $t.Text = 'Claude usage'
+      $t.Add_BalloonTipClicked({ Show-Popup $false })
+      $t.Add_BalloonTipClosed({ $script:tray.Visible = $false })
+      $script:tray = $t
+    }
+    $script:tray.Visible = $true
+    $script:tray.ShowBalloonTip(10000, $title, $text, [System.Windows.Forms.ToolTipIcon]::Info)
+  } catch { Write-Log "toast: $_" }
+}
+
+function Set-DemoUpdate {
+  $script:update = [pscustomobject]@{ version = '1.6.0'; notes = "Self-update check with a tray notification`nFaster refresh on wake" }
+  $script:updMsg = if ($script:updManual) { 'v1.6.0 is available' }
+}
+
+function Start-UpdateCheck([switch]$Manual) {
+  if ($script:updJob) { return }
+  $script:updManual = [bool]$Manual
+  if ($Demo) { Set-DemoUpdate; return }
+  $script:updMsg = if ($Manual) { "Checking$ELL" }
+  $ps = [PowerShell]::Create()
+  [void]$ps.AddScript({ param($lib) $ErrorActionPreference = 'Stop'; . $lib; Get-LatestRelease }).AddArgument($LibPath)
+  $script:updJob = @{ ps = $ps; handle = $ps.BeginInvoke(); started = Get-Date }
+  $updTimer.Start()
+  if ($Manual) { $script:forcePopup = $true; Update-All }
+}
+
+function Complete-UpdateCheck {
+  $j = $script:updJob
+  $timedOut = ((Get-Date) - $j.started).TotalSeconds -gt 30
+  if (-not $timedOut -and -not $j.handle.IsCompleted) { return }
+  $updTimer.Stop()
+  $script:updJob = $null
+  $rel = $null
+  try {
+    if ($timedOut) { $j.ps.Stop() } else { $rel = @($j.ps.EndInvoke($j.handle))[0] }
+  } catch { Write-Log "update check: $($_.Exception.Message)" }
+  finally { $j.ps.Dispose() }
+  $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  if ($rel) {
+    $script:state.updateCheckedAt = $now
+    if (Test-NewerVersion $rel.version $AppVersion) {
+      $script:update = [pscustomobject]@{ version = $rel.version; notes = (Format-ReleaseNotes $rel.notes) }
+      $script:state.updateVersion = $rel.version; $script:state.updateNotes = $script:update.notes
+      $script:updMsg = "v$($rel.version) is available"
+      if ("$($script:state.notifiedVersion)" -ne $rel.version) {
+        $script:state.notifiedVersion = $rel.version
+        Show-Toast 'Update available' "Claude usage widget v$($rel.version) is available"
+      }
+    } else {
+      $script:update = $null; $script:state.updateVersion = $null; $script:state.updateNotes = $null
+      $script:updMsg = "Up to date (v$AppVersion)"
+    }
+  } else {
+    $script:state.updateCheckedAt = $now - 82800  # offline or rate-limited: try again in an hour
+    $script:updMsg = 'Could not reach GitHub'
+  }
+  Save-State
+  if (-not $script:updManual) { $script:updMsg = $null }
+  $script:forcePopup = $true
+  Update-All
+}
+
+# Runs the official installer, which stops this copy, replaces the files and starts the new one.
+# Only the fixed https://github.com URL is ever fetched; the child's command line must not contain
+# the widget script name, or the installer would stop its own process.
+function Invoke-UpdateNow {
+  if (-not $script:update -or $script:updatingSince) { return }
+  if ($InstallerUrl -notmatch '^https://github\.com/mrcsXndr/claude-usage-widget/releases/latest/download/install\.ps1$') { return }
+  $script:state.pendingUpdate = $script:update.version
+  Save-State
+  try {
+    $cmd = "[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; irm '$InstallerUrl' | iex"
+    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"$cmd`""
+    $script:updatingSince = Get-Date
+    $script:updMsg = "Installing v$($script:update.version), the widget restarts$ELL"
+  } catch {
+    Write-Log "update now: $_"
+    $script:updMsg = "Could not start the installer: $($_.Exception.Message)"
+  }
+  Update-Popup
+}
+
+# After the restart: confirm the version that is now running.
+function Complete-PendingUpdate {
+  $p = "$($script:state.pendingUpdate)"
+  if (-not $p) { return }
+  $script:state.pendingUpdate = $null
+  Save-State
+  if (Test-NewerVersion $p $AppVersion) { Write-Log "update to v$p did not apply (running v$AppVersion)"; return }
+  Show-Toast 'Updated' "Claude usage widget is now v$AppVersion"
+}
+
 # ---------------------------------------------------------------- widget
 
 [xml]$widgetXaml = @"
@@ -453,6 +580,7 @@ function Get-AccountTip($cfg, $res) {
     }
     if ($res.error) { $tip += $res.error }
   }
+  if ($script:update) { $tip += "Update available: v$($script:update.version) (open the list to install)" }
   if ($script:job) { $tip += "Refreshing$ELL" }
   elseif ($script:updated) { $tip += 'Updated {0:HH:mm}' -f $script:updated }
   if ($script:lastError) { $tip += "Error: $($script:lastError)" }
@@ -663,6 +791,15 @@ function Set-WidgetPosition {
           <TextBlock x:Name="Status" FontSize="11" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="0,1,0,0"/>
         </StackPanel>
       </DockPanel>
+      <Border x:Name="UpdBox" Visibility="Collapsed" Background="$($Theme.hover)" BorderBrush="$($Colors.accent)" BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="2,0,2,6">
+        <DockPanel>
+          <Button x:Name="UpdBtn" DockPanel.Dock="Right" Style="{StaticResource AccentBtn}" Content="Update now" VerticalAlignment="Top"/>
+          <StackPanel>
+            <TextBlock x:Name="UpdTitle" FontSize="12" FontWeight="SemiBold" Foreground="$($Colors.accent)" TextWrapping="Wrap"/>
+            <TextBlock x:Name="UpdNotes" FontSize="11" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="0,3,0,0"/>
+          </StackPanel>
+        </DockPanel>
+      </Border>
       <StackPanel x:Name="List"/>
       <StackPanel x:Name="CaptionPanel" Margin="10,10,10,2" Visibility="Collapsed">
         <TextBlock Text="Accounts" FontSize="11" Foreground="$($Theme.sub)" Margin="0,0,0,6"/>
@@ -684,6 +821,11 @@ function Set-WidgetPosition {
           <TextBox x:Name="OptRefresh" Width="46" TextAlignment="Center" ToolTip="Minutes between refreshes (5 or more)"/>
           <TextBlock Text="minutes (5 or more)" FontSize="11.5" Foreground="$($Theme.sub)" VerticalAlignment="Center" Margin="8,0,0,0"/>
         </StackPanel>
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+          <CheckBox x:Name="OptUpdates" Content="Check for updates daily" VerticalAlignment="Center"/>
+          <Button x:Name="UpdCheckBtn" Style="{StaticResource TextBtn}" Content="Check now" Margin="8,0,0,0"/>
+        </StackPanel>
+        <TextBlock x:Name="UpdMsg" FontSize="11" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="0,0,0,12"/>
         <TextBlock Text="Captions" FontSize="11" Foreground="$($Theme.sub)" Margin="0,0,0,6"/>
         <UniformGrid Columns="3">
           <DockPanel Margin="0,0,6,0"><TextBlock DockPanel.Dock="Top" Text="5-hour" FontSize="10.5" Foreground="$($Theme.sub)" Margin="0,0,0,3"/><TextBox x:Name="Cap_5h"/></DockPanel>
@@ -698,7 +840,7 @@ function Set-WidgetPosition {
 "@
 $popup = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $popupXaml))
 $PopupEls = @{}
-foreach ($n in 'Card', 'Slide', 'RefreshBtn', 'EditBtn', 'SaveBtn', 'CancelBtn', 'Title', 'Status', 'List', 'CaptionPanel', 'Cap_5h', 'Cap_7d', 'Cap_fable', 'OptNames', 'OptCaptions', 'OptAnim', 'OptRefresh', 'Footer', 'FindBtn', 'AddBtn', 'AcctMsg', 'AcctTools') { $PopupEls[$n] = $popup.FindName($n) }
+foreach ($n in 'Card', 'Slide', 'RefreshBtn', 'EditBtn', 'SaveBtn', 'CancelBtn', 'Title', 'Status', 'List', 'CaptionPanel', 'Cap_5h', 'Cap_7d', 'Cap_fable', 'OptNames', 'OptCaptions', 'OptAnim', 'OptRefresh', 'Footer', 'FindBtn', 'AddBtn', 'AcctMsg', 'AcctTools', 'UpdBox', 'UpdBtn', 'UpdTitle', 'UpdNotes', 'OptUpdates', 'UpdCheckBtn', 'UpdMsg') { $PopupEls[$n] = $popup.FindName($n) }
 $script:editing = $false
 
 function Get-BarXaml($key, $win) {
@@ -889,8 +1031,17 @@ function Update-Popup {
     else { '' }
   $PopupEls.Status.Foreground = if (-not $script:editing -and -not $script:job -and ($script:lastError -or $script:configError)) { $Colors.bad } else { $Theme.sub }
 
+  $PopupEls.UpdBox.Visibility = if ($script:update) { 'Visible' } else { 'Collapsed' }
+  if ($script:update) {
+    $PopupEls.UpdTitle.Text = "Update available: v$($script:update.version) (you have v$AppVersion)"
+    $PopupEls.UpdNotes.Text = "$($script:update.notes)"
+    $PopupEls.UpdNotes.Visibility = if ($script:update.notes) { 'Visible' } else { 'Collapsed' }
+    $PopupEls.UpdBtn.Content = if ($script:updatingSince) { "Updating$ELL" } else { 'Update now' }
+    $PopupEls.UpdBtn.IsEnabled = -not $script:updatingSince
+  }
+
   $PopupEls.List.Children.Clear()
-  $shown = @(Get-TaskbarCfgs | ForEach-Object name)
+  $shown =@(Get-TaskbarCfgs | ForEach-Object name)
   $cfgs = Get-Visible
   foreach ($cfg in $cfgs) { [void]$PopupEls.List.Children.Add((New-AccountRow $cfg $shown)) }
   if (-not @($cfgs).Count) {
@@ -907,6 +1058,8 @@ function Update-Popup {
     $PopupEls.OptNames.IsChecked = Test-Option 'showNames'
     $PopupEls.OptCaptions.IsChecked = Test-Option 'showCaptions'
     $PopupEls.OptAnim.IsChecked = Test-Option 'animations'
+    $PopupEls.OptUpdates.IsChecked = Test-Option 'updateCheck'
+    $PopupEls.UpdMsg.Text = if ($script:updMsg) { $script:updMsg } else { "Version $AppVersion" }
     $PopupEls.OptRefresh.Text = "$(Get-RefreshMinutes)"
     $script:loadingCaptions = $false
     Show-AcctTool
@@ -930,7 +1083,7 @@ foreach ($k in $LimitKeys) {
   })
 }
 
-foreach ($opt in @(@('OptNames', 'showNames'), @('OptCaptions', 'showCaptions'), @('OptAnim', 'animations'))) {
+foreach ($opt in @(@('OptNames', 'showNames'), @('OptCaptions', 'showCaptions'), @('OptAnim', 'animations'), @('OptUpdates', 'updateCheck'))) {
   $PopupEls[$opt[0]].Tag = $opt[1]
   $PopupEls[$opt[0]].Add_Click({
     param($s)
@@ -1368,6 +1521,8 @@ $popup.Add_KeyDown({
   if ($script:editing) { Switch-PopupMode { Stop-Editing $false } } else { Hide-Popup }
 })
 $PopupEls.RefreshBtn.Add_Click({ Start-Refresh })
+$PopupEls.UpdBtn.Add_Click({ Invoke-UpdateNow })
+$PopupEls.UpdCheckBtn.Add_Click({ Start-UpdateCheck -Manual })
 $PopupEls.EditBtn.Add_Click({ Switch-PopupMode { Start-Editing } })
 $PopupEls.SaveBtn.Add_Click({ Switch-PopupMode { Stop-Editing $true } })
 $PopupEls.CancelBtn.Add_Click({ Switch-PopupMode { Stop-Editing $false } })
@@ -1501,6 +1656,7 @@ function Save-Snapshot([bool]$editing, [string]$file) {
 if ($Snapshot) {
   New-Item -ItemType Directory -Force $Snapshot | Out-Null
   Set-DemoData
+  Set-DemoUpdate
   Save-Snapshot $false (Join-Path $Snapshot 'widget.png')
   Save-Snapshot $true (Join-Path $Snapshot 'settings.png')
   # Account tools open (used to check the layout; not part of the README).
@@ -1522,6 +1678,10 @@ $findTimer = New-Object Windows.Threading.DispatcherTimer
 $findTimer.Interval = [TimeSpan]::FromMilliseconds(250)
 $findTimer.Add_Tick({ if ($script:findJob) { Complete-Find } else { $findTimer.Stop() } })
 
+$updTimer = New-Object Windows.Threading.DispatcherTimer
+$updTimer.Interval = [TimeSpan]::FromMilliseconds(250)
+$updTimer.Add_Tick({ if ($script:updJob) { Complete-UpdateCheck } else { $updTimer.Stop() } })
+
 $script:hwnd = [IntPtr]::Zero
 $topTimer = New-Object Windows.Threading.DispatcherTimer
 $topTimer.Interval = [TimeSpan]::FromMilliseconds(750)
@@ -1542,6 +1702,9 @@ $minuteTimer.Add_Tick({
   $due = ((Get-Date) - $script:lastTry).TotalMinutes -ge (Get-RefreshMinutes)
   if (-not $script:job -and ($due -or (Test-ResetPassed))) { Start-Refresh }
   else { Update-All }
+  if (Test-UpdateDue) { Start-UpdateCheck }
+  # The installer never took over (offline, blocked): give the button back.
+  if ($script:updatingSince -and ((Get-Date) - $script:updatingSince).TotalSeconds -gt 120) { $script:updatingSince = $null; $script:updMsg = 'The update did not start. Try again.'; Update-All }
 })
 
 $widget.Add_SourceInitialized({
@@ -1553,6 +1716,8 @@ $widget.Add_Loaded({
   $topTimer.Start()
   $minuteTimer.Start()
   Start-Refresh
+  Complete-PendingUpdate
+  if (Test-UpdateDue) { Start-UpdateCheck }
 })
 
 if ($Demo) { Set-DemoData } else { Import-UiConfig }
@@ -1565,5 +1730,6 @@ try {
   Write-Log "fatal: $_"
   throw
 } finally {
+  if ($script:tray) { $script:tray.Visible = $false; $script:tray.Dispose() }
   $mutex.ReleaseMutex()
 }

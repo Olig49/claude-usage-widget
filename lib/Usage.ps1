@@ -25,7 +25,10 @@ $FableModel = 'claude-fable-5-1'
 $ClaudeCodeSystem = "You are Claude Code, Anthropic's official CLI for Claude."
 $LimitKeys  = @('5h', '7d', 'fable')
 $DefaultCaptions = [ordered]@{ '5h' = '5h'; '7d' = '7d'; 'fable' = 'Fable' }
-$AppVersion = '1.4.0'
+$AppVersion = '1.5.0'
+# Self-update: the latest-release API and the one installer URL "Update now" may run.
+$ReleaseApiUrl = 'https://api.github.com/repos/mrcsXndr/claude-usage-widget/releases/latest'
+$InstallerUrl  = 'https://github.com/mrcsXndr/claude-usage-widget/releases/latest/download/install.ps1'
 # Plans the settings picker offers; an empty plan means Auto (whatever the API reports).
 $PlanChoices = @('Pro', 'Max 5x', 'Max 20x')
 $UserAgent  = "claude-usage-widget/$AppVersion (+https://github.com/mrcsXndr/claude-usage-widget)"
@@ -258,6 +261,49 @@ function Send-Request($client, [string]$method, [string]$url, [string]$token, [s
     while ($e.InnerException) { $e = $e.InnerException }
     throw "network: $($e.Message)"
   }
+}
+
+# ---------------------------------------------------------------- update check
+
+function ConvertTo-Version([string]$tag) {
+  if ("$tag" -match '^v?(\d+)\.(\d+)\.(\d+)') { return [version]"$($Matches[1]).$($Matches[2]).$($Matches[3])" }
+  return $null
+}
+
+# The latest GitHub release as { tag, version, notes }, or $null when offline, rate-limited or
+# malformed. Unauthenticated, 10 s timeout, never throws.
+function Get-LatestRelease {
+  $c = New-HttpClient
+  try {
+    $c.Timeout = [TimeSpan]::FromSeconds(10)
+    $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, $ReleaseApiUrl)
+    [void]$req.Headers.TryAddWithoutValidation('Accept', 'application/vnd.github+json')
+    $res = $c.SendAsync($req).GetAwaiter().GetResult()
+    try {
+      if ([int]$res.StatusCode -ne 200) { return $null }
+      $j = ConvertFrom-Json ($res.Content.ReadAsStringAsync().GetAwaiter().GetResult())
+    } finally { $res.Dispose() }
+    $v = ConvertTo-Version $j.tag_name
+    if (-not $v) { return $null }
+    return [pscustomobject]@{ tag = "$($j.tag_name)"; version = "$v"; notes = "$($j.body)" }
+  } catch {
+    return $null
+  } finally {
+    $c.Dispose()
+  }
+}
+
+function Test-NewerVersion([string]$candidate, [string]$current) {
+  $a = ConvertTo-Version $candidate; $b = ConvertTo-Version $current
+  return [bool]($a -and $b -and $a -gt $b)
+}
+
+# First few lines of release notes, markdown marks stripped, for the update pill.
+function Format-ReleaseNotes([string]$body, [int]$lines = 3) {
+  $out = @($body -split "`r?`n" | ForEach-Object { ($_ -replace '^[\s#>*\-]+', '' -replace '[`*]', '').Trim() } | Where-Object { $_ } | Select-Object -First $lines)
+  $t = $out -join "`n"
+  if ($t.Length -gt 260) { $t = $t.Substring(0, 257) + '...' }
+  return $t
 }
 
 function New-Window($pct, $reset) {

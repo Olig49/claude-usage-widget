@@ -3,6 +3,12 @@
 All notable changes to Claude Usage Widget. Versions follow [semantic versioning](https://semver.org/).
 Each version is a [GitHub release](https://github.com/mrcsXndr/claude-usage-widget/releases) with an installer.
 
+## [1.5.0] - 2026-10-10
+
+### Added
+- Self-update. Once a day the widget asks GitHub for the latest release (unauthenticated, short timeout, silent when offline or rate-limited). When it is newer than the installed version you get a tray notification, an "Update available" box with the first lines of the release notes, and an **Update now** button. Update now runs the official installer (`releases/latest/download/install.ps1`, that exact URL only) in a separate process; the widget restarts on the new version and confirms it.
+- Settings: **Check for updates daily** (turn the automatic check off), **Check now**, and the installed version.
+
 ## [1.4.0] - 2026-10-10
 
 ### Added
