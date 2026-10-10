@@ -3,6 +3,15 @@
 All notable changes to Claude Usage Widget. Versions follow [semantic versioning](https://semver.org/).
 Each version is a [GitHub release](https://github.com/mrcsXndr/claude-usage-widget/releases) with an installer.
 
+## [1.7.0] - 2026-10-10
+
+### Fixed
+- A token you approved is saved for real, at once. Closing or cancelling Settings no longer deletes the variable it created (that was why it seemed to vanish); the account is kept too. Only an explicit **Remove** deletes a variable (still asked first).
+- After saving, the widget says where it went: "Saved as user environment variable CLAUDE_USAGE_TOKEN_<NAME> (Windows Settings → Environment Variables → User variables)".
+
+### Added
+- When xndr-claude is installed, the token approval offers **Save to xndr-claude** first (`xndr-claude add <name> --stdin`, the token goes over stdin, never argv). Without it, the user environment variable is used. These accounts use `source: xndr-claude`.
+
 ## [1.6.0] - 2026-10-10
 
 ### Added

@@ -1126,10 +1126,10 @@ $PopupEls.OptRefresh.Add_LostKeyboardFocus({ param($s) $s.Text = "$(Get-RefreshM
 # Find / Add / Remove change the in-memory config like every other Settings edit: Save keeps it,
 # Cancel drops it. Only references are stored (folder, env var name); a token is never read for display.
 # A pasted token is the exception to "in memory until Save": it goes to the Windows user environment the
-# moment the user approves it (and is removed again if Settings is cancelled); config.json keeps the variable NAME only.
+# moment the user approves it (to xndr-claude when installed, else a user variable) and stays even if Settings is
+# cancelled; config.json keeps the variable NAME only.
 
 $script:acctMode = $null      # 'find' | 'add' | 'delenv' | $null
-$script:envMade = @()         # user variables created during this Settings session (removed on Cancel)
 $script:envDrop = @()         # user variables whose delete was approved (applied on Save)
 $script:delEnvVar = $null     # variable the delete prompt is asking about
 $script:acctNote = $null
@@ -1269,14 +1269,14 @@ function Show-DelEnvTool($pan) {
   [void]$pan.Children.Add($bar)
 }
 
-# Applies the approved environment changes: Save drops the variables of removed accounts, Cancel
-# undoes the ones this Settings session created.
+# Save deletes the variables of accounts the user explicitly removed. Cancel never touches a saved token.
 function Complete-EnvChanges([bool]$keep) {
-  $list = if ($keep) { @($script:envDrop) } else { @($script:envMade) }
-  foreach ($v in $list) {
-    try { Remove-UserEnvToken $v } catch { Write-Log "env var delete failed ($v): $($_.Exception.GetType().Name)" }
+  if ($keep) {
+    foreach ($v in @($script:envDrop)) {
+      try { Remove-UserEnvToken $v } catch { Write-Log "env var delete failed ($v): $($_.Exception.GetType().Name)" }
+    }
   }
-  $script:envDrop = @(); $script:envMade = @()
+  $script:envDrop = @()
 }
 
 function Show-FindTool($pan) {
@@ -1355,7 +1355,8 @@ function Update-NfSource {
 function Show-AddTool($pan) {
   $nf = $script:nf
   # xndr-claude is offered only on a PC that has it (or when the search found its accounts).
-  $hasX = (Test-Command 'xndr-claude') -or @($script:found | Where-Object { $_.source -eq 'xndr-claude' }).Count -gt 0
+  $hasXc = Test-Command 'xndr-claude'
+  $hasX = $hasXc -or @($script:found | Where-Object { $_.source -eq 'xndr-claude' }).Count -gt 0
   $srcs = @(@('claude-code', 'Claude Code login'), @('token', 'Token'))
   if ($hasX) { $srcs += ,@('xndr-claude', 'xndr-claude') }
   if ($nf.src -notin ($srcs | ForEach-Object { $_[0] })) { $nf.src = 'claude-code' }
@@ -1385,7 +1386,8 @@ function Show-AddTool($pan) {
     <TextBlock Name="NfWarn" Margin="0,4,0,0" FontSize="10.5" Foreground="$($Colors.bad)" TextWrapping="Wrap" Visibility="Collapsed"/>
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,6,0,0">
       <Button Name="NfNo" Style="{DynamicResource TextBtn}" Content="Cancel"/>
-      <Button Name="NfYes" Style="{DynamicResource AccentBtn}" Content="Approve"/>
+      <Button Name="NfX" Style="{DynamicResource AccentBtn}" Content="Save to xndr-claude" Visibility="Collapsed"/>
+      <Button Name="NfYes" Style="{DynamicResource AccentBtn}" Content="Save as environment variable"/>
     </StackPanel>
   </StackPanel>
 </StackPanel>
@@ -1399,7 +1401,10 @@ function Show-AddTool($pan) {
   $script:nfEls.input.Add_TextChanged({ param($s) $script:nf.input = $s.Text })
   $script:nfEls.token.Add_PasswordChanged({ $script:nfEls.approve.Visibility = 'Collapsed'; $script:nfEls.msg.Visibility = 'Collapsed' })
   $form.FindName('NfNo').Add_Click({ $script:nfEls.approve.Visibility = 'Collapsed' })
-  $form.FindName('NfYes').Add_Click({ Complete-AddToken })
+  $form.FindName('NfYes').Add_Click({ Complete-AddToken 'env' })
+  $nfX = $form.FindName('NfX')
+  if ($hasXc) { $nfX.Visibility = 'Visible' }
+  $nfX.Add_Click({ Complete-AddToken 'xndr-claude' })
   foreach ($src in ($srcs | ForEach-Object { $_[0] })) {
     $rb = $form.FindName('NS_' + ($src -replace '\W', '_'))
     $rb.Tag = $src
@@ -1474,7 +1479,8 @@ function Invoke-AddAccount {
       elseif (@(Get-AcctCfgs | Where-Object { "$($_.env)" -eq $var }).Count) { $msg = "An account already uses $var. Pick another name." }
       else {
         $exists = [bool](Get-UserEnvToken $var)
-        $e.approveText.Text = "Save this token as the Windows user environment variable ${var}? It stays on this PC.$(if ($exists) { ' This replaces the value already stored there.' })"
+        $e.approveText.Text = if (Test-Command 'xndr-claude') { "Where should this token be saved? In xndr-claude, or as the Windows user environment variable ${var}. It stays on this PC.$(if ($exists) { ' The variable already has a value; saving there replaces it.' })" }
+          else { "Save this token as the Windows user environment variable ${var}? It stays on this PC.$(if ($exists) { ' This replaces the value already stored there.' })" }
         $e.warn.Text = 'This does not look like a setup token (it should start with sk-ant-oat). You can still save it.'
         $e.warn.Visibility = if (Test-TokenFormat $tok) { 'Collapsed' } else { 'Visible' }
         $e.approve.Visibility = 'Visible'
@@ -1499,31 +1505,40 @@ function Invoke-AddAccount {
 }
 
 # The user approved the line shown by Invoke-AddAccount: store the token, add the account that points at it.
-function Complete-AddToken {
+function Complete-AddToken([string]$target = 'env') {
   $e = $script:nfEls; $label = $script:nf.label.Trim()
   $var = Get-TokenVarName $label
+  $name = Get-UniqueName $label
   $tok = "$($e.token.Password)".Trim()
   $e.approve.Visibility = 'Collapsed'
   try {
     if (-not $var -or -not $tok) { throw 'name or token missing' }
-    $existed = [bool](Get-UserEnvToken $var)
     if ($Demo) { $stored = $true }
-    else {
-      $stored = Set-UserEnvToken $var $tok
-      if ($stored -and -not $existed) { $script:envMade = @($script:envMade) + @($var) }
-    }
+    elseif ($target -eq 'xndr-claude') { Save-XndrClaudeToken $name $tok; $stored = $true }
+    else { $stored = Set-UserEnvToken $var $tok }
     if (-not $stored) { throw 'read-back mismatch' }
   } catch {
     # Only the error type: a message could carry the value.
-    Write-Log "saving token variable failed ($($_.Exception.GetType().Name))"
-    $e.msg.Text = 'Could not save the token to your user environment.'
+    Write-Log "saving token failed ($target, $($_.Exception.GetType().Name))"
+    $e.msg.Text = if ($target -eq 'xndr-claude') { 'Could not save the token to xndr-claude.' } else { 'Could not save the token to your user environment.' }
     $e.msg.Visibility = 'Visible'
     return
   } finally { $tok = $null; $e.token.Clear() }
-  $o = [ordered]@{ name = (Get-UniqueName $label); label = $label; plan = $script:nf.plan; source = 'env'; env = $var; envManaged = $true }
+  $o = if ($target -eq 'xndr-claude') { [ordered]@{ name = $name; label = $label; plan = $script:nf.plan; source = 'xndr-claude' } }
+       else { [ordered]@{ name = $name; label = $label; plan = $script:nf.plan; source = 'env'; env = $var; envManaged = $true } }
   Add-AcctCfg $o
+  # The token is already stored, so its account must survive Cancel/Esc: put it in the Cancel copy and on disk now.
+  if (-not $Demo) {
+    try {
+      $bk = $script:configBackup | ConvertFrom-Json
+      $bk.accounts = @($bk.accounts | Where-Object { $_ }) + @([pscustomobject]$o)
+      $script:configBackup = $bk | ConvertTo-Json -Depth 8
+      Save-Config $bk
+    } catch { Write-Log "save config: $($_.Exception.GetType().Name)" }
+  }
   $script:nf = @{ label = ''; src = 'token'; input = ''; plan = '' }
-  $script:acctNote = "Added $label. Save to keep it."
+  $script:acctNote = if ($target -eq 'xndr-claude') { "Saved to xndr-claude as $name." }
+                     else { "Saved as user environment variable $var (Windows Settings $([char]0x2192) Environment Variables $([char]0x2192) User variables)" }
   $script:acctMode = $null
   Update-Widget
   Update-Popup
@@ -1587,7 +1602,7 @@ function Start-Editing {
   $script:configBackup = $script:config | ConvertTo-Json -Depth 8
   $script:editing = $true
   $script:acctMode = $null; $script:acctNote = $null; $script:acctsChanged = $false
-  $script:envMade = @(); $script:envDrop = @()
+  $script:envDrop = @()
 }
 
 function Stop-Editing([bool]$keep) {
