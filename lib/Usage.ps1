@@ -25,7 +25,7 @@ $FableModel = 'claude-fable-5-1'
 $ClaudeCodeSystem = "You are Claude Code, Anthropic's official CLI for Claude."
 $LimitKeys  = @('5h', '7d', 'fable')
 $DefaultCaptions = [ordered]@{ '5h' = '5h'; '7d' = '7d'; 'fable' = 'Fable' }
-$AppVersion = '1.7.0'
+$AppVersion = '1.7.1'
 # Self-update: the latest-release API and the one installer URL "Update now" may run.
 $ReleaseApiUrl = 'https://api.github.com/repos/mrcsXndr/claude-usage-widget/releases/latest'
 $InstallerUrl  = 'https://github.com/mrcsXndr/claude-usage-widget/releases/latest/download/install.ps1'
@@ -50,7 +50,24 @@ function Get-XndrClaudeHome {
   return Join-Path $HOME '.xndr-claude'
 }
 
-function Test-Command([string]$name) { [bool](Get-Command $name -ErrorAction SilentlyContinue) }
+# A long-running widget keeps the PATH it started with, so a CLI installed later (npm -g xndr-claude)
+# is invisible to it. Merge any Machine/User PATH entries the process lacks.
+function Update-ProcessPath {
+  $have = @($env:PATH -split ';' | Where-Object { $_ })
+  foreach ($scope in 'Machine', 'User') {
+    foreach ($p in ([Environment]::GetEnvironmentVariable('PATH', $scope) -split ';' | Where-Object { $_ })) {
+      $e = [Environment]::ExpandEnvironmentVariables($p)
+      if ($have -notcontains $e) { $have += $e }
+    }
+  }
+  $env:PATH = $have -join ';'
+}
+
+function Test-Command([string]$name) {
+  if (Get-Command $name -ErrorAction SilentlyContinue) { return $true }
+  Update-ProcessPath
+  return [bool](Get-Command $name -ErrorAction SilentlyContinue)
+}
 
 # Runs a command line through cmd (so npm shims and PATH lookups work) and captures its output.
 function Invoke-Captured([string]$commandLine, [int]$timeoutSec = 30, [string]$stdin) {
@@ -164,7 +181,8 @@ function Import-XndrClaudeAccounts {
   if (-not (Test-Command 'xndr-claude')) { return }
   try {
     $r = Invoke-Captured 'xndr-claude usage --json' 60
-    if ($r.exit -ne 0) { throw (Get-LastLine $r.err) }
+    # xndr-claude can exit non-zero while still listing every account (one limited or errored); the list is what counts.
+    if ($r.exit -ne 0 -and "$($r.out)".TrimStart() -notmatch '^\[') { throw "exit $($r.exit): $(Get-LastLine $r.err)" }
     foreach ($a in (ConvertFrom-Json $r.out)) {
       [ordered]@{ name = $a.name; label = $a.label; plan = $a.plan; source = 'xndr-claude' }
     }
