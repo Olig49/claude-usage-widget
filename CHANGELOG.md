@@ -3,6 +3,17 @@
 All notable changes to Claude Usage Widget. Versions follow [semantic versioning](https://semver.org/).
 Each version is a [GitHub release](https://github.com/mrcsXndr/claude-usage-widget/releases) with an installer.
 
+## [1.6.0] - 2026-10-10
+
+### Added
+- Settings > Add account > **Token**: paste a token from `claude setup-token` into a masked box and name the account. After an explicit approval ("Save this token as the Windows user environment variable CLAUDE_USAGE_TOKEN_<NAME>? It stays on this PC.") the widget stores it with `SetEnvironmentVariable(..., 'User')`, reads it back from the registry, and points the account at the variable. The token is never written to config.json, the log or a snapshot. A token that does not start with `sk-ant-oat` only gets a warning.
+- Removing an account the widget created a variable for offers to delete that variable too (applied on Save).
+
+### Changed
+- Environment-variable accounts read `HKCU\Environment` first, so a variable set after the widget started is picked up without a restart.
+- Add account offers two sources, Claude Code login and Token. xndr-claude (find and add) now appears only when it is installed; existing xndr-claude accounts are untouched. The old "Env var" source is replaced by Token (existing `env` accounts keep working).
+- Cancelling Settings removes a token variable created in that session.
+
 ## [1.5.0] - 2026-10-10
 
 ### Added

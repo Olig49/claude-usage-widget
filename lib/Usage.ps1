@@ -25,7 +25,7 @@ $FableModel = 'claude-fable-5-1'
 $ClaudeCodeSystem = "You are Claude Code, Anthropic's official CLI for Claude."
 $LimitKeys  = @('5h', '7d', 'fable')
 $DefaultCaptions = [ordered]@{ '5h' = '5h'; '7d' = '7d'; 'fable' = 'Fable' }
-$AppVersion = '1.5.0'
+$AppVersion = '1.6.0'
 # Self-update: the latest-release API and the one installer URL "Update now" may run.
 $ReleaseApiUrl = 'https://api.github.com/repos/mrcsXndr/claude-usage-widget/releases/latest'
 $InstallerUrl  = 'https://github.com/mrcsXndr/claude-usage-widget/releases/latest/download/install.ps1'
@@ -216,12 +216,47 @@ function Get-AccountToken($acct) {
     }
     'command' { return Get-CommandToken $acct.command }
     'env' {
-      $t = [Environment]::GetEnvironmentVariable($acct.env)
+      $t = Get-UserEnvToken $acct.env
       if (-not $t) { throw "environment variable $($acct.env) is not set" }
       return $t.Trim()
     }
     default { throw "unknown source '$($acct.source)'" }
   }
+}
+
+# ---------------------------------------------------------------- tokens kept in the user environment
+# The widget's own process never sees a user variable set after it started, so these read the
+# registry (HKCU\Environment) directly; the process environment is the fallback for variables set elsewhere.
+
+function Get-UserEnvToken([string]$name) {
+  $v = $null
+  try {
+    $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+    if ($k) { try { $v = $k.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } finally { $k.Dispose() } }
+  } catch {}
+  if (-not $v) { $v = [Environment]::GetEnvironmentVariable($name) }
+  return $v
+}
+
+# CLAUDE_USAGE_TOKEN_<NAME>, or $null when the account name has nothing usable in it.
+function Get-TokenVarName([string]$accountName) {
+  $s = ("$accountName".ToUpper() -replace '[^A-Z0-9]+', '_').Trim('_')
+  if (-not $s) { return $null }
+  return "CLAUDE_USAGE_TOKEN_$s"
+}
+
+function Test-TokenFormat([string]$token) { "$token".Trim() -match '^sk-ant-oat\d*-' }
+
+# Writes the user variable and reads it back from the registry; $true only when the value matches.
+function Set-UserEnvToken([string]$name, [string]$value) {
+  if ($name -notmatch '^CLAUDE_USAGE_TOKEN_[A-Z0-9_]+$') { throw 'bad variable name' }
+  [Environment]::SetEnvironmentVariable($name, $value, 'User')
+  return ((Get-UserEnvToken $name) -eq $value)
+}
+
+function Remove-UserEnvToken([string]$name) {
+  if ($name -notmatch '^CLAUDE_USAGE_TOKEN_[A-Z0-9_]+$') { throw 'bad variable name' }
+  [Environment]::SetEnvironmentVariable($name, [NullString]::Value, 'User')
 }
 
 function Get-CommandToken([string]$commandLine) {

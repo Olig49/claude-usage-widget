@@ -761,6 +761,24 @@ function Set-WidgetPosition {
           </Setter.Value>
         </Setter>
       </Style>
+      <Style TargetType="PasswordBox">
+        <Setter Property="Foreground" Value="$($Theme.fg)"/>
+        <Setter Property="CaretBrush" Value="$($Theme.fg)"/>
+        <Setter Property="SelectionBrush" Value="$($Colors.accent)"/>
+        <Setter Property="FontSize" Value="12.5"/>
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="PasswordBox">
+              <Border x:Name="Bd" Background="$($Theme.field)" BorderBrush="$($Theme.border)" BorderThickness="1" CornerRadius="5" Padding="6,3">
+                <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center"/>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="$($Colors.accent)"/></Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
       <Style TargetType="TextBox">
         <Setter Property="Foreground" Value="$($Theme.fg)"/>
         <Setter Property="CaretBrush" Value="$($Theme.fg)"/>
@@ -1106,9 +1124,14 @@ $PopupEls.OptRefresh.Add_LostKeyboardFocus({ param($s) $s.Text = "$(Get-RefreshM
 
 # ---------------------------------------------------------------- account tools (Settings)
 # Find / Add / Remove change the in-memory config like every other Settings edit: Save keeps it,
-# Cancel drops it. Only references are stored (folder, xndr-claude name, env var name); a token is never read for display.
+# Cancel drops it. Only references are stored (folder, env var name); a token is never read for display.
+# A pasted token is the exception to "in memory until Save": it goes to the Windows user environment the
+# moment the user approves it (and is removed again if Settings is cancelled); config.json keeps the variable NAME only.
 
-$script:acctMode = $null      # 'find' | 'add' | $null
+$script:acctMode = $null      # 'find' | 'add' | 'delenv' | $null
+$script:envMade = @()         # user variables created during this Settings session (removed on Cancel)
+$script:envDrop = @()         # user variables whose delete was approved (applied on Save)
+$script:delEnvVar = $null     # variable the delete prompt is asking about
 $script:acctNote = $null
 $script:acctsChanged = $false
 $script:found = $null         # discovered accounts (Claude Code logins + xndr-claude), $null = not searched yet
@@ -1137,9 +1160,14 @@ function Add-AcctCfg($a) {
 }
 
 function Remove-Account([string]$name) {
+  $gone = Get-AcctCfg $name
   $script:config.accounts = @(Get-AcctCfgs | Where-Object { $_.name -ne $name })
   $script:acctsChanged = $true
   $script:acctNote = "Removed. Save to keep it, Cancel to undo."
+  # A token the widget saved gets its own approval before the variable is deleted.
+  if ($gone.envManaged -eq $true -and "$($gone.env)" -match '^CLAUDE_USAGE_TOKEN_[A-Z0-9_]+$') {
+    $script:delEnvVar = "$($gone.env)"; $script:acctMode = 'delenv'
+  }
   Update-Widget
   Update-Popup
 }
@@ -1151,7 +1179,7 @@ function Set-DemoFound {
   )
 }
 
-# Discovery can take a minute (xndr-claude probes each account), so it runs in a background runspace.
+# Discovery can take a minute (xndr-claude, when installed, probes each account), so it runs in a background runspace.
 function Start-Find {
   if ($script:findJob) { return }
   if ($Demo) { Set-DemoFound; return }
@@ -1216,6 +1244,39 @@ function Show-AcctTool {
   $PopupEls.AcctMsg.Visibility = if ($script:acctNote) { 'Visible' } else { 'Collapsed' }
   if ($script:acctMode -eq 'find') { Show-FindTool $pan }
   elseif ($script:acctMode -eq 'add') { Show-AddTool $pan }
+  elseif ($script:acctMode -eq 'delenv') { Show-DelEnvTool $pan }
+}
+
+# Approval to delete the user environment variable that held a removed account's token.
+function Show-DelEnvTool($pan) {
+  $v = $script:delEnvVar
+  $bar = [Windows.Markup.XamlReader]::Parse(@"
+<StackPanel $ns Margin="0,8,0,0">
+  <TextBlock Text="$(Esc "Also delete the Windows user environment variable $v (the saved token)?")" FontSize="11.5" Foreground="$($Theme.fg)" TextWrapping="Wrap"/>
+  <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+    <Button Name="DKeep" Style="{DynamicResource TextBtn}" Content="Keep it"/>
+    <Button Name="DDel" Style="{DynamicResource AccentBtn}" Content="Delete it"/>
+  </StackPanel>
+</StackPanel>
+"@)
+  $bar.FindName('DKeep').Add_Click({ $script:acctMode = $null; $script:delEnvVar = $null; Show-AcctTool })
+  $bar.FindName('DDel').Add_Click({
+    $script:envDrop = @($script:envDrop) + @($script:delEnvVar)
+    $script:acctNote = "Removed. $($script:delEnvVar) is deleted when you Save."
+    $script:acctMode = $null; $script:delEnvVar = $null
+    Show-AcctTool
+  })
+  [void]$pan.Children.Add($bar)
+}
+
+# Applies the approved environment changes: Save drops the variables of removed accounts, Cancel
+# undoes the ones this Settings session created.
+function Complete-EnvChanges([bool]$keep) {
+  $list = if ($keep) { @($script:envDrop) } else { @($script:envMade) }
+  foreach ($v in $list) {
+    try { Remove-UserEnvToken $v } catch { Write-Log "env var delete failed ($v): $($_.Exception.GetType().Name)" }
+  }
+  $script:envDrop = @(); $script:envMade = @()
 }
 
 function Show-FindTool($pan) {
@@ -1276,19 +1337,29 @@ function Show-FindTool($pan) {
 
 function Update-NfSource {
   $e = $script:nfEls; $src = $script:nf.src
-  $e.hint.Text = switch ($src) { 'claude-code' { 'Folder' } 'xndr-claude' { 'Account' } default { 'Variable' } }
+  $tok = $src -eq 'token'
+  $e.hint.Text = switch ($src) { 'token' { 'Token' } 'xndr-claude' { 'Account' } default { 'Folder' } }
   $e.note.Text = switch ($src) {
-    'claude-code' { 'Folder holding .credentials.json. Empty = your default Claude Code login (~\.claude).' }
+    'token'       { 'Paste the token from running "claude setup-token". It is saved to your Windows user environment after you approve it, and never shown again.' }
     'xndr-claude' { 'Name of an xndr-claude account.' }
-    default       { 'Name of an environment variable that holds a token. Its value is never shown.' }
+    default       { 'Folder holding .credentials.json. Empty = your default Claude Code login (~\.claude).' }
   }
   $e.browse.Visibility = if ($src -eq 'claude-code') { 'Visible' } else { 'Collapsed' }
   $e.chips.Visibility = if ($src -eq 'xndr-claude' -and $e.chips.Children.Count) { 'Visible' } else { 'Collapsed' }
+  $e.input.Visibility = if ($tok) { 'Collapsed' } else { 'Visible' }
+  $e.token.Visibility = if ($tok) { 'Visible' } else { 'Collapsed' }
+  $e.approve.Visibility = 'Collapsed'
+  $e.msg.Visibility = 'Collapsed'
 }
 
 function Show-AddTool($pan) {
   $nf = $script:nf
-  $srcBoxes = (@(@('claude-code', 'Claude Code login'), @('xndr-claude', 'xndr-claude'), @('env', 'Env var')) | ForEach-Object {
+  # xndr-claude is offered only on a PC that has it (or when the search found its accounts).
+  $hasX = (Test-Command 'xndr-claude') -or @($script:found | Where-Object { $_.source -eq 'xndr-claude' }).Count -gt 0
+  $srcs = @(@('claude-code', 'Claude Code login'), @('token', 'Token'))
+  if ($hasX) { $srcs += ,@('xndr-claude', 'xndr-claude') }
+  if ($nf.src -notin ($srcs | ForEach-Object { $_[0] })) { $nf.src = 'claude-code' }
+  $srcBoxes = ($srcs | ForEach-Object {
     "<RadioButton Name=`"NS_$($_[0] -replace '\W', '_')`" Style=`"{DynamicResource Seg}`" GroupName=`"nfsrc`" Content=`"$($_[1])`" IsChecked=`"$($nf.src -eq $_[0])`"/>"
   }) -join ''
   $form = [Windows.Markup.XamlReader]::Parse(@"
@@ -1298,7 +1369,10 @@ function Show-AddTool($pan) {
   <DockPanel Margin="0,8,0,0">
     <TextBlock Name="NfHint" Width="56" FontSize="11" Foreground="$($Theme.sub)" VerticalAlignment="Center"/>
     <Button Name="NfBrowse" DockPanel.Dock="Right" Style="{DynamicResource TextBtn}" Content="Browse$ELL"/>
-    <TextBox Name="NfInput" Text="$(Esc $nf.input)"/>
+    <Grid>
+      <TextBox Name="NfInput" Text="$(Esc $nf.input)"/>
+      <PasswordBox Name="NfToken" Visibility="Collapsed" ToolTip="Setup token (sk-ant-oat...)"/>
+    </Grid>
   </DockPanel>
   <WrapPanel Name="NfChips" Margin="56,6,0,0"/>
   <TextBlock Name="NfNote" Margin="56,4,0,0" FontSize="10.5" Foreground="$($Theme.sub)" TextWrapping="Wrap"/>
@@ -1306,18 +1380,30 @@ function Show-AddTool($pan) {
     <TextBlock Text="Plan" Width="56" FontSize="11" Foreground="$($Theme.sub)" VerticalAlignment="Center"/>$(Get-PlanSegXaml 'NP' $nf.plan)
   </WrapPanel>
   <TextBlock Name="NfMsg" Margin="0,6,0,0" FontSize="11" Foreground="$($Colors.bad)" TextWrapping="Wrap" Visibility="Collapsed"/>
+  <StackPanel Name="NfApprove" Margin="0,8,0,0" Visibility="Collapsed">
+    <TextBlock Name="NfApproveText" FontSize="11.5" Foreground="$($Theme.fg)" TextWrapping="Wrap"/>
+    <TextBlock Name="NfWarn" Margin="0,4,0,0" FontSize="10.5" Foreground="$($Colors.bad)" TextWrapping="Wrap" Visibility="Collapsed"/>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,6,0,0">
+      <Button Name="NfNo" Style="{DynamicResource TextBtn}" Content="Cancel"/>
+      <Button Name="NfYes" Style="{DynamicResource AccentBtn}" Content="Approve"/>
+    </StackPanel>
+  </StackPanel>
 </StackPanel>
 "@)
   $script:nfEls = @{
     hint = $form.FindName('NfHint'); note = $form.FindName('NfNote'); browse = $form.FindName('NfBrowse')
-    chips = $form.FindName('NfChips'); input = $form.FindName('NfInput'); label = $form.FindName('NfLabel'); msg = $form.FindName('NfMsg')
+    chips = $form.FindName('NfChips'); input = $form.FindName('NfInput'); token = $form.FindName('NfToken'); label = $form.FindName('NfLabel'); msg = $form.FindName('NfMsg')
+    approve = $form.FindName('NfApprove'); approveText = $form.FindName('NfApproveText'); warn = $form.FindName('NfWarn')
   }
   $script:nfEls.label.Add_TextChanged({ param($s) $script:nf.label = $s.Text })
   $script:nfEls.input.Add_TextChanged({ param($s) $script:nf.input = $s.Text })
-  foreach ($src in 'claude-code', 'xndr-claude', 'env') {
+  $script:nfEls.token.Add_PasswordChanged({ $script:nfEls.approve.Visibility = 'Collapsed'; $script:nfEls.msg.Visibility = 'Collapsed' })
+  $form.FindName('NfNo').Add_Click({ $script:nfEls.approve.Visibility = 'Collapsed' })
+  $form.FindName('NfYes').Add_Click({ Complete-AddToken })
+  foreach ($src in ($srcs | ForEach-Object { $_[0] })) {
     $rb = $form.FindName('NS_' + ($src -replace '\W', '_'))
     $rb.Tag = $src
-    $rb.Add_Checked({ param($s) $script:nf.src = $s.Tag; $script:nfEls.input.Text = ''; Update-NfSource })
+    $rb.Add_Checked({ param($s) $script:nf.src = $s.Tag; $script:nfEls.input.Text = ''; $script:nfEls.token.Clear(); Update-NfSource })
   }
   $opts = @('') + $PlanChoices
   for ($k = 0; $k -lt $opts.Count; $k++) {
@@ -1378,12 +1464,24 @@ function Invoke-AddAccount {
       else { $o.name = $in; $o.label = if ($label) { $label } else { $in } }
     }
     default {
-      if ($in -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { $msg = 'Enter the name of an environment variable, e.g. CLAUDE_TOKEN_WORK.' }
+      # Token: nothing is written yet. Validate, then ask for approval (Complete-AddToken does the write).
+      $e = $script:nfEls
+      $var = Get-TokenVarName $label
+      $tok = "$($e.token.Password)".Trim()
+      if (-not $var) { $msg = 'Give the account a name (letters or digits); it names the environment variable.' }
+      elseif (-not $tok) { $msg = 'Paste the token first.' }
+      elseif ($tok -match '\s') { $msg = 'A token has no spaces or line breaks. Paste just the token.' }
+      elseif (@(Get-AcctCfgs | Where-Object { "$($_.env)" -eq $var }).Count) { $msg = "An account already uses $var. Pick another name." }
       else {
-        $o.name = Get-UniqueName $(if ($label) { $label } else { $in })
-        $o.label = if ($label) { $label } else { $in }
-        $o.env = $in
+        $exists = [bool](Get-UserEnvToken $var)
+        $e.approveText.Text = "Save this token as the Windows user environment variable ${var}? It stays on this PC.$(if ($exists) { ' This replaces the value already stored there.' })"
+        $e.warn.Text = 'This does not look like a setup token (it should start with sk-ant-oat). You can still save it.'
+        $e.warn.Visibility = if (Test-TokenFormat $tok) { 'Collapsed' } else { 'Visible' }
+        $e.approve.Visibility = 'Visible'
+        $e.msg.Visibility = 'Collapsed'
       }
+      $tok = $null
+      if (-not $msg) { return }
     }
   }
   if ($msg) {
@@ -1395,6 +1493,37 @@ function Invoke-AddAccount {
   Add-AcctCfg $o
   $script:nf = @{ label = ''; src = $nf.src; input = ''; plan = '' }
   $script:acctNote = "Added $($o.label). Save to keep it."
+  $script:acctMode = $null
+  Update-Widget
+  Update-Popup
+}
+
+# The user approved the line shown by Invoke-AddAccount: store the token, add the account that points at it.
+function Complete-AddToken {
+  $e = $script:nfEls; $label = $script:nf.label.Trim()
+  $var = Get-TokenVarName $label
+  $tok = "$($e.token.Password)".Trim()
+  $e.approve.Visibility = 'Collapsed'
+  try {
+    if (-not $var -or -not $tok) { throw 'name or token missing' }
+    $existed = [bool](Get-UserEnvToken $var)
+    if ($Demo) { $stored = $true }
+    else {
+      $stored = Set-UserEnvToken $var $tok
+      if ($stored -and -not $existed) { $script:envMade = @($script:envMade) + @($var) }
+    }
+    if (-not $stored) { throw 'read-back mismatch' }
+  } catch {
+    # Only the error type: a message could carry the value.
+    Write-Log "saving token variable failed ($($_.Exception.GetType().Name))"
+    $e.msg.Text = 'Could not save the token to your user environment.'
+    $e.msg.Visibility = 'Visible'
+    return
+  } finally { $tok = $null; $e.token.Clear() }
+  $o = [ordered]@{ name = (Get-UniqueName $label); label = $label; plan = $script:nf.plan; source = 'env'; env = $var; envManaged = $true }
+  Add-AcctCfg $o
+  $script:nf = @{ label = ''; src = 'token'; input = ''; plan = '' }
+  $script:acctNote = "Added $label. Save to keep it."
   $script:acctMode = $null
   Update-Widget
   Update-Popup
@@ -1458,12 +1587,14 @@ function Start-Editing {
   $script:configBackup = $script:config | ConvertTo-Json -Depth 8
   $script:editing = $true
   $script:acctMode = $null; $script:acctNote = $null; $script:acctsChanged = $false
+  $script:envMade = @(); $script:envDrop = @()
 }
 
 function Stop-Editing([bool]$keep) {
   if (-not $script:editing) { return }
   $script:editing = $false
   $script:acctMode = $null; $script:acctNote = $null
+  if (-not $Demo) { Complete-EnvChanges $keep }
   if ($keep) { Save-UiConfig }
   elseif ($script:configBackup) { $script:config = $script:configBackup | ConvertFrom-Json }
   $script:configBackup = $null
@@ -1606,10 +1737,11 @@ $widget.ContextMenu = $menu
 
 # ---------------------------------------------------------------- snapshot (README images)
 
-function Save-Snapshot([bool]$editing, [string]$file) {
+function Save-Snapshot([bool]$editing, [string]$file, [scriptblock]$after) {
   $script:editing = $editing
   Update-Widget
   Update-Popup
+  if ($after) { & $after }
   foreach ($el in $WidgetEls.Root, $PopupEls.Card) {
     if ($el.Parent -is [Windows.Window]) { $el.Parent.Content = $null }
     elseif ($el.Parent) { $el.Parent.Content = $null }
@@ -1665,6 +1797,13 @@ if ($Snapshot) {
   Save-Snapshot $true (Join-Path $Snapshot 'settings-find.png')
   $script:acctMode = 'add'
   Save-Snapshot $true (Join-Path $Snapshot 'settings-add.png')
+  # Token mode with the approval line open (fake value).
+  $script:nf = @{ label = 'Side project'; src = 'token'; input = ''; plan = '' }
+  Save-Snapshot $true (Join-Path $Snapshot 'settings-add-token.png') {
+    $script:nfEls.token.Password = 'sk-ant-oat01-FAKEFAKEFAKE'
+    $script:nfEls.label.Text = 'Side project'
+    Invoke-AddAccount
+  }
   exit
 }
 

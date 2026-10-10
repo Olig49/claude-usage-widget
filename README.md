@@ -68,9 +68,13 @@ Running either one again updates you to the latest release and keeps your settin
 The widget finds accounts on its own:
 
 - **Claude Code logins.** It reads `%USERPROFILE%\.claude\.credentials.json`, which is where Claude Code keeps its login on Windows. It also checks any other `.claude*` folder in your user profile (for example one per account set up with `CLAUDE_CONFIG_DIR`). Accounts are named after the email they're logged in with.
-- **[xndr-claude](https://github.com/mrcsXndr/xndr-claude)** accounts, if it's installed.
+- **[xndr-claude](https://github.com/mrcsXndr/xndr-claude)** accounts, only if you happen to have it installed. It is optional; nothing else depends on it, and the widget shows it as a source only when it is found on the PC.
 
-You can also manage accounts from **Settings** (the cog): **Find new accounts** lists logins not added yet, **Add account** takes a name, a source (Claude Code login folder, xndr-claude account or env var) and a plan, and the bin removes one. Save keeps the changes. After you log in to another account, right-click the rings and choose **Scan for accounts**. If the same account turns up twice, you can hide one of them by adding `"hidden": true` to it in the config file (see below).
+You can also manage accounts from **Settings** (the cog): **Find new accounts** lists logins not added yet, **Add account** takes a name, a source and a plan, and the bin removes one. Save keeps the changes. The sources are:
+
+- **Claude Code login**: pick the folder that holds the login (`.credentials.json`).
+- **Token**: paste a token from `claude setup-token`. The widget asks first ("Save this token as the Windows user environment variable `CLAUDE_USAGE_TOKEN_<NAME>`? It stays on this PC."), and only after you press Approve does it store the token there. The token is never written to the config file or the log; the config only holds the variable name. Setup tokens can't report their plan, so pick it yourself. Removing such an account offers to delete the variable too.
+- **xndr-claude account**: only listed when xndr-claude is installed. After you log in to another account, right-click the rings and choose **Scan for accounts**. If the same account turns up twice, you can hide one of them by adding `"hidden": true` to it in the config file (see below).
 
 <details>
 <summary>Other token sources (config file)</summary>
@@ -96,9 +100,9 @@ Everything is stored in `%APPDATA%\claude-usage-widget\config.json`. To open it,
 | `source` | Where the token comes from |
 | --- | --- |
 | `claude-code` | Claude Code's login. Add `"dir"` for a config folder other than `~/.claude`. |
-| `xndr-claude` | `xndr-claude token <name>`. Add `"account"` if the name there is different. |
+| `xndr-claude` | Optional. `xndr-claude token <name>`. Add `"account"` if the name there is different. |
 | `command` | Whatever the command prints, for example a password manager CLI. |
-| `env` | An environment variable. |
+| `env` | An environment variable (read from your user environment, so one set while the widget runs works). The Token source in Settings creates these as `CLAUDE_USAGE_TOKEN_<NAME>`. |
 
 `"refreshMinutes"` sets how often it refreshes, 5 at the lowest. `"showNames"` and `"showCaptions"` turn the account names and ring captions on the taskbar on or off. `"animations"` turns the popup's fade and slide on or off.
 
