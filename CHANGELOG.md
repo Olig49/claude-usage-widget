@@ -3,6 +3,19 @@
 All notable changes to Claude Usage Widget. Versions follow [semantic versioning](https://semver.org/).
 Each version is a [GitHub release](https://github.com/mrcsXndr/claude-usage-widget/releases) with an installer.
 
+## [1.7.1] - 2026-10-10
+
+Small fixes ship as patch versions from now on.
+
+### Fixed
+- **Find new accounts missed xndr-claude accounts added after the widget started.** Two causes, both silent: the widget only saw the PATH it started with, so a CLI installed later (or one whose account list changed behind a stale PATH) was "not installed"; and `xndr-claude usage --json` exiting non-zero (an account limited or errored) discarded the whole list. The PATH is now refreshed from the Machine/User environment when a command is not found, and a non-zero exit with a JSON list is accepted. Failures are logged with the exit code.
+- Rings are now centred. The ring is an even number of device pixels across at any display scale (30 DIP was 37.5 px at 125%, putting the centre half a pixel off), the pie and ring share that centre, the window sits on whole device pixels, and the percentage and caption text are lifted about 0.6 px so the digits, not the line box, are centred on the ring (measured: 0.69 px low before, 0.00 after).
+
+### Added
+- **New accounts are found automatically**: at startup and every hour the widget checks xndr-claude and Claude Code logins. A new one shows as "New account found: <name>" with **Add** / **Ignore**, and a small dot on the widget. Nothing is added on its own; ignored names are remembered (`state.json`).
+- **Settings tabs**: Accounts, Display, Captions, Updates. Save / Cancel stay global. In Accounts each account is one compact row; the arrow opens its style, plan and rings.
+- **Reorder accounts** with the up / down arrows on each row. The order is saved in `config.json` and the taskbar follows it.
+
 ## [1.7.0] - 2026-10-10
 
 ### Fixed
