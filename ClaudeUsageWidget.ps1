@@ -138,6 +138,37 @@ function Get-AcctCfg($name) { Get-AcctCfgs | Where-Object name -eq $name | Selec
 function Get-Visible { @(Get-AcctCfgs | Where-Object { $_.hidden -ne $true }) }
 function Get-Result($name) { $script:accounts | Where-Object name -eq $name | Select-Object -First 1 }
 function Get-Label($cfg) { if ("$($cfg.label)".Trim()) { "$($cfg.label)".Trim() } else { "$($cfg.name)" } }
+
+# Name -> the 1-2 characters shown inside an account's ring when percentages are off: the initials set in
+# Settings, else the first letter of its name; accounts whose first letters collide get two letters each.
+function Get-Shorts {
+  $out = @{}; $taken = @{}
+  $all = @(Get-AcctCfgs)
+  foreach ($c in $all) {
+    $s = "$($c.short)".Trim()
+    if ($s.Length -gt 2) { $s = $s.Substring(0, 2) }
+    if ($s) { $out[$c.name] = $s; $taken[$s] = $true }
+  }
+  $auto = @($all | Where-Object { -not $out.ContainsKey($_.name) } | ForEach-Object {
+    $t = (Get-Label $_) -replace '[^\p{L}\p{N}]', ''
+    if (-not $t) { $t = "$($_.name)" -replace '[^\p{L}\p{N}]', '' }
+    if (-not $t) { $t = '?' }
+    [pscustomobject]@{ name = $_.name; text = $t; first = $t.Substring(0, 1).ToUpper() }
+  })
+  foreach ($a in $auto) {
+    $s = $a.first
+    if ($taken.ContainsKey($s) -or @($auto | Where-Object first -eq $a.first).Count -gt 1) {
+      $s = $null
+      foreach ($ch in $a.text.Substring(1).ToCharArray()) {
+        $cand = $a.first + "$ch".ToLower()
+        if (-not $taken.ContainsKey($cand)) { $s = $cand; break }
+      }
+      if (-not $s) { $n = 2; while ($taken.ContainsKey("$($a.first)$n")) { $n++ }; $s = "$($a.first)$n" }
+    }
+    $out[$a.name] = $s; $taken[$s] = $true
+  }
+  return $out
+}
 # The API's plan wins; the plan picked in settings (at first, the one found at discovery) covers tokens it can't read.
 function Get-Plan($cfg, $res) { if ($res.apiPlan) { "$($res.apiPlan)" } elseif ("$($cfg.plan)".Trim()) { "$($cfg.plan)".Trim() } else { $null } }
 
@@ -392,8 +423,8 @@ function Show-Toast([string]$title, [string]$text) {
 }
 
 function Set-DemoUpdate {
-  $script:update = [pscustomobject]@{ version = '1.7.2'; notes = "Self-update check with a tray notification`nFaster refresh on wake" }
-  $script:updMsg = if ($script:updManual) { 'v1.7.2 is available' }
+  $script:update = [pscustomobject]@{ version = '1.8.1'; notes = "Self-update check with a tray notification`nFaster refresh on wake" }
+  $script:updMsg = if ($script:updManual) { 'v1.8.1 is available' }
 }
 
 function Start-UpdateCheck([switch]$Manual) {
@@ -509,23 +540,25 @@ function Set-Ring($path, $pct, [double]$size = 30, [double]$thick = 3.5) {
 
 # The ring is an even number of device pixels across, so its centre sits on a pixel boundary at any
 # display scale (30 DIP is 37.5 px at 125%, which put the centre half a pixel off and blurred one side).
-function Get-RingSize {
+function Get-RingSize([double]$dip = 30) {
   $dpi = 1.0
   try { $dpi = [Windows.Media.VisualTreeHelper]::GetDpi($widget).DpiScaleX } catch {}
-  return 2 * [Math]::Round(30 * $dpi / 2, [MidpointRounding]::AwayFromZero) / $dpi
+  return 2 * [Math]::Round($dip * $dpi / 2, [MidpointRounding]::AwayFromZero) / $dpi
 }
 
 # Segoe UI puts its baseline at ~81% of the line box, so digits sit ~0.06 em below the box centre;
 # the 1.3 / 1.2 bottom margins lift the text that much (about 0.6 px) so it is optically centred on the ring.
-function New-RingElement($pct, [string]$caption, [bool]$gapAfter) {
-  $text = if ($null -ne $pct) { Format-Pct $pct } elseif ($script:job) { $ELL } else { $DASH }
+# With $short (percentages off) the account's initials take the percentage's place.
+function New-RingElement($pct, [string]$caption, [bool]$gapAfter, [string]$short) {
+  $text = if ($short) { Esc $short } elseif ($null -ne $pct) { Format-Pct $pct } elseif ($script:job) { $ELL } else { $DASH }
+  $tsize = if ($short.Length -eq 1) { 12 } else { 10.5 }
   $sz = Get-RingSize
   $el = [Windows.Markup.XamlReader]::Parse(@"
 <StackPanel $ns Orientation="Horizontal" Margin="0,0,$(if ($gapAfter) { 10 } else { 0 }),0">
   <Grid Width="$sz" Height="$sz">
     <Ellipse Stroke="$($Theme.ring)" StrokeThickness="3.5"/>
     <Path Name="Arc" StrokeThickness="3.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-    <TextBlock Text="$text" FontSize="10.5" FontWeight="SemiBold" Foreground="$($Theme.fg)" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,1.3"/>
+    <TextBlock Text="$text" FontSize="$tsize" FontWeight="SemiBold" Foreground="$($Theme.fg)" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,1.3"/>
   </Grid>
   $(if (Test-Option 'showCaptions') { "<TextBlock Text=`"$(Esc $caption)`" FontSize=`"10`" Foreground=`"$($Theme.sub)`" VerticalAlignment=`"Center`" Margin=`"4,0,0,1.2`"/>" })
 </StackPanel>
@@ -553,8 +586,25 @@ function Set-Pie($path, $pct, [double]$c = 15, [double]$r = 8.5) {
 
 # One dial for two limits: a pie in the middle, a ring around it, and both percentages beside it
 # (a filled dot marks the pie, a hollow one the ring; both drawn in the same box so the lines align).
-function New-CombinedElement($cfg, $res) {
+# With $short (percentages off) it is two rings, the account's initials in the middle, and nothing beside it.
+function New-CombinedElement($cfg, $res, [string]$short) {
   $pieKey = if ($cfg.pie -eq '7d') { '7d' } else { '5h' }
+  $ringKey = if ($pieKey -eq '5h') { '7d' } else { '5h' }
+  if ($short) {
+    $sz = Get-RingSize; $in = Get-RingSize 18
+    $el = [Windows.Markup.XamlReader]::Parse(@"
+<Grid $ns Width="$sz" Height="$sz">
+  <Ellipse Stroke="$($Theme.ring)" StrokeThickness="3.5"/>
+  <Path Name="Arc" StrokeThickness="3.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+  <Ellipse Width="$in" Height="$in" Stroke="$($Theme.ring)" StrokeThickness="2" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+  <Path Name="Inner" Width="$in" Height="$in" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+  <TextBlock Text="$(Esc $short)" FontSize="$(if ($short.Length -eq 1) { 10.5 } else { 9 })" FontWeight="SemiBold" Foreground="$($Theme.fg)" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,1.2"/>
+</Grid>
+"@)
+    Set-Ring ($el.FindName('Arc')) (Get-Win $res $ringKey).pct $sz
+    Set-Ring ($el.FindName('Inner')) (Get-Win $res $pieKey).pct $in 2
+    return $el
+  }
   $lines = foreach ($k in '5h', '7d') {
     $w = Get-Win $res $k
     $pct = if ($null -ne $w.pct) { "$(Format-Pct $w.pct)%" } elseif ($script:job) { $ELL } else { $DASH }
@@ -575,7 +625,6 @@ function New-CombinedElement($cfg, $res) {
   <StackPanel VerticalAlignment="Center" Margin="6,0,0,0">$($lines -join '')</StackPanel>
 </StackPanel>
 "@)
-  $ringKey = if ($pieKey -eq '5h') { '7d' } else { '5h' }
   Set-Ring ($el.FindName('Arc')) (Get-Win $res $ringKey).pct $sz
   Set-Pie ($el.FindName('Pie')) (Get-Win $res $pieKey).pct ($sz / 2) ($sz * 8.5 / 30)
   return $el
@@ -585,11 +634,23 @@ function Get-AccountTip($cfg, $res) {
   $tip = @()
   if ($cfg) {
     $plan = Get-Plan $cfg $res
-    $tip += (Get-Label $cfg) + $(if ($plan) { " $DOT $plan" })
+    $short = if (-not (Test-Option 'showPercents')) { (Get-Shorts)[$cfg.name] }
+    $tip += (Get-Label $cfg) + $(if ($short) { " ($short)" }) + $(if ($plan) { " $DOT $plan" })
+    # Where each limit sits on the taskbar, so the bar itself needs no captions.
+    $places = @{}
+    if ($cfg.style -eq 'combined') {
+      $pieKey = if ($cfg.pie -eq '7d') { '7d' } else { '5h' }
+      $places[$pieKey] = if ($short) { 'inner ring' } else { 'middle' }
+      $places[$(if ($pieKey -eq '5h') { '7d' } else { '5h' })] = 'outer ring'
+    } else {
+      $keys = @(Get-TaskbarLimits $cfg)
+      if ($keys.Count -gt 1) { for ($i = 0; $i -lt $keys.Count; $i++) { $places[$keys[$i]] = if ($i -eq 0) { 'left ring' } elseif ($i -eq $keys.Count - 1) { 'right ring' } else { 'middle ring' } } }
+    }
     foreach ($k in $LimitKeys) {
       $w = Get-Win $res $k
-      if ($w -and $null -ne $w.pct) { $tip += "$(Get-Caption $k)  $(Format-Pct $w.pct)%  $DOT  resets $(Format-Reset $w.reset)" }
+      if ($w -and $null -ne $w.pct) { $tip += "$(Get-Caption $k)  $(Format-Pct $w.pct)%$(if ($places[$k]) { "  ($($places[$k]))" })  $DOT  resets $(Format-Reset $w.reset)" }
     }
+    $tip += "Green under 70% $DOT amber from 70% $DOT red from 90%"
     if ($res.error) { $tip += $res.error }
   }
   if ($script:update) { $tip += "Update available: v$($script:update.version) (open the list to install)" }
@@ -610,6 +671,8 @@ function Update-Widget {
     $g.ToolTip = if ($script:job) { "Looking for accounts$ELL" } else { (Get-AccountTip $null $null) + "`nNo accounts yet: right-click > Scan for accounts" }
     [void]$WidgetEls.Groups.Children.Add($g)
   }
+  # Percentages off: just the rings, each holding its account's initials.
+  $shorts = if (-not (Test-Option 'showPercents')) { Get-Shorts } else { @{} }
   for ($i = 0; $i -lt $cfgs.Count; $i++) {
     $cfg = $cfgs[$i]; $res = Get-Result $cfg.name
     $g = New-Object Windows.Controls.StackPanel -Property @{ Orientation = 'Horizontal'; Background = '#01000000' }
@@ -623,12 +686,12 @@ function Update-Widget {
       }))
     }
     if ($cfg.style -eq 'combined') {
-      [void]$g.Children.Add((New-CombinedElement $cfg $res))
+      [void]$g.Children.Add((New-CombinedElement $cfg $res $shorts[$cfg.name]))
     } else {
       $keys = @(Get-TaskbarLimits $cfg)
       for ($k = 0; $k -lt $keys.Count; $k++) {
         $w = Get-Win $res $keys[$k]
-        [void]$g.Children.Add((New-RingElement $w.pct (Get-Caption $keys[$k]) ($k -lt $keys.Count - 1)))
+        [void]$g.Children.Add((New-RingElement $w.pct (Get-Caption $keys[$k]) ($k -lt $keys.Count - 1) $shorts[$cfg.name]))
       }
     }
     $g.ToolTip = Get-AccountTip $cfg $res
@@ -857,6 +920,10 @@ function Set-WidgetPosition {
           <StackPanel x:Name="AcctTools"/>
         </StackPanel>
         <StackPanel x:Name="PanDisp">
+          <DockPanel Margin="0,0,0,8">
+            <CheckBox x:Name="OptPcts" DockPanel.Dock="Left" Content="Percentages" VerticalAlignment="Top"/>
+            <TextBlock Text="Off: only the rings, with each account's initials inside (set them per account under Accounts). Hover the rings for the numbers." FontSize="10.5" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="12,1,0,0"/>
+          </DockPanel>
           <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
             <CheckBox x:Name="OptNames" Content="Account names" Margin="0,0,18,0"/>
             <CheckBox x:Name="OptCaptions" Content="Captions" Margin="0,0,18,0"/>
@@ -883,6 +950,7 @@ function Set-WidgetPosition {
           </UniformGrid>
         </StackPanel>
       </StackPanel>
+      <TextBlock x:Name="Legend" FontSize="10.5" Foreground="$($Theme.sub)" Margin="10,8,10,0" TextWrapping="Wrap"/>
       <TextBlock x:Name="Footer" FontSize="10.5" Foreground="$($Theme.sub)" Margin="10,8,10,2" TextWrapping="Wrap"/>
     </StackPanel>
   </Border>
@@ -890,7 +958,7 @@ function Set-WidgetPosition {
 "@
 $popup = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $popupXaml))
 $PopupEls = @{}
-foreach ($n in 'Card', 'Slide', 'RefreshBtn', 'EditBtn', 'SaveBtn', 'CancelBtn', 'Title', 'Status', 'List', 'CaptionPanel', 'Cap_5h', 'Cap_7d', 'Cap_fable', 'OptNames', 'OptCaptions', 'OptAnim', 'OptRefresh', 'Footer', 'FindBtn', 'AddBtn', 'AcctMsg', 'AcctTools', 'UpdBox', 'UpdBtn', 'UpdTitle', 'UpdNotes', 'OptUpdates', 'UpdCheckBtn', 'UpdMsg', 'TabBar', 'NewAcctBox', 'PanAcct', 'PanDisp', 'PanUpd', 'PanCap', 'Tab_acct', 'Tab_disp', 'Tab_cap', 'Tab_upd') { $PopupEls[$n] = $popup.FindName($n) }
+foreach ($n in 'Card', 'Slide', 'RefreshBtn', 'EditBtn', 'SaveBtn', 'CancelBtn', 'Title', 'Status', 'List', 'CaptionPanel', 'Cap_5h', 'Cap_7d', 'Cap_fable', 'OptPcts', 'OptNames', 'OptCaptions', 'OptAnim', 'OptRefresh', 'Legend', 'Footer', 'FindBtn', 'AddBtn', 'AcctMsg', 'AcctTools', 'UpdBox', 'UpdBtn', 'UpdTitle', 'UpdNotes', 'OptUpdates', 'UpdCheckBtn', 'UpdMsg', 'TabBar', 'NewAcctBox', 'PanAcct', 'PanDisp', 'PanUpd', 'PanCap', 'Tab_acct', 'Tab_disp', 'Tab_cap', 'Tab_upd') { $PopupEls[$n] = $popup.FindName($n) }
 $script:editing = $false
 $script:tab = 'acct'          # Settings tab: acct | disp | cap | upd
 $script:expanded = $null      # account whose details are open in the Accounts tab ('' = none)
@@ -973,6 +1041,11 @@ function New-AccountRow($cfg, $shownNames) {
         <RadioButton Name="S_combined" Style="{DynamicResource Seg}" GroupName="style_$id" Content="Combined" IsChecked="$combined"/>
       </StackPanel>
     </DockPanel>
+    <StackPanel Orientation="Horizontal" Margin="26,8,0,0">
+      <TextBlock Text="Initials" Width="48" FontSize="11" Foreground="$($Theme.sub)" VerticalAlignment="Center"/>
+      <TextBox Name="Short" Width="40" MaxLength="2" TextAlignment="Center" Text="$(Esc ((Get-Shorts)[$cfg.name]))" ToolTip="1 or 2 characters. Empty: automatic"/>
+      <TextBlock Text="inside the ring when percentages are off" FontSize="10.5" Foreground="$($Theme.sub)" VerticalAlignment="Center" Margin="8,0,0,0"/>
+    </StackPanel>
     <WrapPanel Margin="26,8,0,0" ToolTip="Auto shows the plan the API reports. Setup-tokens can't read it, so pick it here.">
       <TextBlock Text="Plan" Width="48" FontSize="11" Foreground="$($Theme.sub)" VerticalAlignment="Center"/>
       $planBoxes
@@ -1012,6 +1085,9 @@ function New-AccountRow($cfg, $shownNames) {
     $tb = $row.FindName('Label')
     $tb.Tag = $cfg.name
     $tb.Add_TextChanged({ param($s) Set-AcctProp $s.Tag 'label' $s.Text; Save-UiConfig; Update-Widget })
+    $sb = $row.FindName('Short')
+    $sb.Tag = $cfg.name
+    $sb.Add_TextChanged({ param($s) Set-AcctProp $s.Tag 'short' $s.Text.Trim(); Save-UiConfig; Update-Widget })
     foreach ($k in $LimitKeys) {
       $cb = $row.FindName("L_$k")
       $cb.Tag = "$($cfg.name)|$k"
@@ -1128,6 +1204,7 @@ function Update-Popup {
   if ($script:editing) {
     $script:loadingCaptions = $true
     foreach ($k in $LimitKeys) { $PopupEls["Cap_$k"].Text = Get-Caption $k }
+    $PopupEls.OptPcts.IsChecked = Test-Option 'showPercents'
     $PopupEls.OptNames.IsChecked = Test-Option 'showNames'
     $PopupEls.OptCaptions.IsChecked = Test-Option 'showCaptions'
     $PopupEls.OptAnim.IsChecked = Test-Option 'animations'
@@ -1143,11 +1220,40 @@ function Update-Popup {
     if ($script:tab -eq 'acct') { Show-AcctTool }
   }
   Update-NewAcctBox
+  Update-Legend
   $PopupEls.Footer.Visibility = if ($acctTab) { 'Visible' } else { 'Collapsed' }
   $PopupEls.Footer.Text = if ($script:editing) {
     "The bin removes an account from the widget only; your login stays. Tick an account to show it on the taskbar; the arrows set the order. Rings shows one ring per limit; Combined shows 5h and 7d in one dial. Plan: Auto shows what the API reports; setup-tokens can't read it, so pick theirs."
   } else {
     "Tick accounts to show them on the taskbar $DOT Ctrl+drag the rings to move them"
+  }
+}
+
+# One line under the list: which ring is which on the taskbar, and what the colours mean.
+function Update-Legend {
+  $t = $PopupEls.Legend
+  $t.Inlines.Clear()
+  $t.Visibility = if ($script:editing) { 'Collapsed' } else { 'Visible' }
+  if ($script:editing) { return }
+  $cfgs = @(Get-TaskbarCfgs)
+  $parts = @()
+  $pies = @($cfgs | Where-Object { $_.style -eq 'combined' } | ForEach-Object { if ($_.pie -eq '7d') { '7d' } else { '5h' } } | Select-Object -Unique)
+  if ($pies.Count -eq 1) {
+    $parts += "Inner $(Get-Caption $pies[0]), outer $(Get-Caption $(if ($pies[0] -eq '5h') { '7d' } else { '5h' }))"
+  } elseif ($pies.Count -gt 1) { $parts += 'Inner and outer: hover a dial' }
+  $ringKeys = @($cfgs | Where-Object { $_.style -ne 'combined' } | ForEach-Object { Get-TaskbarLimits $_ })
+  $ringKeys = @($LimitKeys | Where-Object { $ringKeys -contains $_ })
+  if ($ringKeys.Count -gt 1) { $parts += "Rings left to right: $(($ringKeys | ForEach-Object { Get-Caption $_ }) -join ', ')" }
+  if ($parts.Count) {
+    $t.Inlines.Add((New-Object Windows.Documents.Run($parts -join " $DOT ")))
+    $t.Inlines.Add((New-Object Windows.Documents.LineBreak))
+  }
+  $nb = [string][char]0x00A0
+  foreach ($c in @(@($Colors.ok, "under${nb}70%   "), @($Colors.warn, "70%+   "), @($Colors.bad, '90%+'))) {
+    $dot = New-Object Windows.Documents.Run([string][char]0x25CF)
+    $dot.Foreground = $c[0]
+    $t.Inlines.Add($dot)
+    $t.Inlines.Add((New-Object Windows.Documents.Run("$nb$($c[1])")))
   }
 }
 
@@ -1229,7 +1335,7 @@ foreach ($k in $LimitKeys) {
   })
 }
 
-foreach ($opt in @(@('OptNames', 'showNames'), @('OptCaptions', 'showCaptions'), @('OptAnim', 'animations'), @('OptUpdates', 'updateCheck'))) {
+foreach ($opt in @(@('OptPcts', 'showPercents'), @('OptNames', 'showNames'), @('OptCaptions', 'showCaptions'), @('OptAnim', 'animations'), @('OptUpdates', 'updateCheck'))) {
   $PopupEls[$opt[0]].Tag = $opt[1]
   $PopupEls[$opt[0]].Add_Click({
     param($s)
@@ -1946,6 +2052,47 @@ function Save-Snapshot([bool]$editing, [string]$file, [scriptblock]$after) {
   $scene.FindName('CardSlot').Content = $null
 }
 
+# The taskbar strip alone, laid out and rendered as at $scale display scaling, with an optional tooltip above it.
+function Save-BarSnapshot([string]$file, [double]$scale, [string]$tip) {
+  $dpi = New-Object Windows.DpiScale($scale, $scale)
+  [Windows.Media.VisualTreeHelper]::SetRootDpi($widget, $dpi)
+  Update-Widget
+  if ($WidgetEls.Root.Parent) { $WidgetEls.Root.Parent.Content = $null }
+  $scene = [Windows.Markup.XamlReader]::Parse(@"
+<StackPanel $ns Background="#2E3257" TextElement.FontFamily="Segoe UI Variable Text, Segoe UI" UseLayoutRounding="True">
+  <ContentControl Name="TipSlot" HorizontalAlignment="Left" Margin="40,12,12,8"/>
+  <Border Height="48" Background="#F21C1C1C" Padding="24,0,24,0">
+    <DockPanel LastChildFill="False">
+      <StackPanel DockPanel.Dock="Right" Margin="40,0,0,0" VerticalAlignment="Center">
+        <TextBlock Text="11:46" Foreground="White" FontSize="11.5" HorizontalAlignment="Right"/>
+        <TextBlock Text="2026-10-13" Foreground="White" FontSize="11.5" HorizontalAlignment="Right"/>
+      </StackPanel>
+      <ContentControl Name="Slot" DockPanel.Dock="Right" VerticalAlignment="Center"/>
+    </DockPanel>
+  </Border>
+</StackPanel>
+"@)
+  [Windows.Media.VisualTreeHelper]::SetRootDpi($scene, $dpi)
+  $scene.FindName('Slot').Content = $WidgetEls.Root
+  # A ToolTip can't be parented, so its text is drawn in a box like the system one.
+  if ($tip) {
+    $scene.FindName('TipSlot').Content = [Windows.Markup.XamlReader]::Parse(@"
+<Border $ns Background="#FFFFFF" BorderBrush="#767676" BorderThickness="1" Padding="6,3"><TextBlock Text="$((Esc $tip) -replace "`n", '&#10;')" FontFamily="Segoe UI" FontSize="12" Foreground="#000000"/></Border>
+"@)
+  }
+  $scene.Measure((New-Object Windows.Size([double]::PositiveInfinity, [double]::PositiveInfinity)))
+  $scene.Arrange((New-Object Windows.Rect($scene.DesiredSize)))
+  $scene.UpdateLayout()
+  $rtb = New-Object Windows.Media.Imaging.RenderTargetBitmap([int][Math]::Ceiling($scene.ActualWidth * $scale), [int][Math]::Ceiling($scene.ActualHeight * $scale), (96 * $scale), (96 * $scale), ([Windows.Media.PixelFormats]::Pbgra32))
+  $rtb.Render($scene)
+  $enc = New-Object Windows.Media.Imaging.PngBitmapEncoder
+  $enc.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($rtb))
+  $fs = [IO.File]::Create($file)
+  try { $enc.Save($fs) } finally { $fs.Close() }
+  $scene.FindName('Slot').Content = $null
+  $scene.FindName('TipSlot').Content = $null
+}
+
 if ($Snapshot) {
   New-Item -ItemType Directory -Force $Snapshot | Out-Null
   Set-DemoData
@@ -1978,6 +2125,28 @@ if ($Snapshot) {
     $script:nfEls.label.Text = 'Side project'
     Invoke-AddAccount
   }
+  # Five accounts on the taskbar at 100/125/150% display scale, with and without percentages, plus one
+  # account's hover tooltip (layout checks; not part of the README). 'Sandbox' and 'Side project' share an S.
+  $now = [DateTime]::UtcNow
+  $mkWin = { param($p, $mins) [pscustomobject]@{ pct = $p; reset = $now.AddMinutes($mins).ToString('o') } }
+  $script:accounts = @($script:accounts) + @(
+    [pscustomobject]@{ name = 'cs'; status = 'ok'; method = 'probe'; five_h = (& $mkWin 91 95); seven_d = (& $mkWin 58 3000); fable = (& $mkWin 20 3000) }
+    [pscustomobject]@{ name = 'node'; status = 'ok'; method = 'probe'; five_h = (& $mkWin 3 250); seven_d = (& $mkWin 77 5000); fable = (& $mkWin 5 5000) }
+  )
+  (Get-AcctCfg 'cs').label = 'Sandbox'
+  foreach ($c in Get-AcctCfgs) { Set-AcctProp $c.name 'taskbar' $true; Set-AcctProp $c.name 'style' 'combined' }
+  $script:config | Add-Member -Force showNames $false
+  $script:config | Add-Member -Force showPercents $false
+  Save-Snapshot $false (Join-Path $Snapshot 'widget-nopct.png')
+  foreach ($scale in 1, 1.25, 1.5) {
+    foreach ($pcts in $true, $false) {
+      $script:config | Add-Member -Force showPercents $pcts
+      $tip = if (-not $pcts -and $scale -eq 1.25) { Get-AccountTip (Get-AcctCfg 'work') (Get-Result 'work') }
+      Save-BarSnapshot (Join-Path $Snapshot "bar-$(if ($pcts) { 'pct' } else { 'nopct' })-$([int]($scale * 100)).png") $scale $tip
+    }
+  }
+  foreach ($c in Get-AcctCfgs) { Set-AcctProp $c.name 'style' 'rings' }
+  Save-BarSnapshot (Join-Path $Snapshot 'bar-rings-nopct-125.png') 1.25 $null
   exit
 }
 

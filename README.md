@@ -18,7 +18,8 @@ One account or several, updated in the background, in one click.
 
 ## Features
 
-- **Rings on the taskbar.** Each ring is green up to 70%, amber up to 90% and red after that. Hover a ring for its reset time.
+- **Rings on the taskbar.** Each ring is green up to 70%, amber up to 90% and red after that. Hover a ring for its numbers, which ring is which, and its reset times.
+- **Compact when you have many accounts.** Turn **Percentages** off and the taskbar shows only the rings, with each account's initials inside (an automatic letter, two where first letters clash, or your own). Five Combined dials take about half the width they take with percentages.
 - **Multiple accounts.** Tick the accounts you want on the taskbar and they sit side by side, each with its name.
 - **All limits in one click.** The list shows each account's 5-hour window, 7-day window and Fable weekly limit, with countdowns to the resets.
 - **Finds your accounts.** On first run it picks up the Claude Code logins on your PC (and [xndr-claude](https://github.com/mrcsXndr/xndr-claude) accounts if you use it).
@@ -54,7 +55,7 @@ Running either one again updates you to the latest release and keeps your settin
 | --- | --- |
 | **Click** the rings | Open the account list |
 | **Tick** an account | Show it on the taskbar |
-| **⚙ Settings** | Rename accounts, pick Rings or Combined, choose rings, toggle names, captions and animations, set the refresh interval. Changes preview on the taskbar right away; **Save** keeps them and **Cancel** (or Esc) undoes them |
+| **⚙ Settings** | Rename accounts, set their initials, pick Rings or Combined, choose rings, toggle percentages, names, captions and animations, set the refresh interval. Changes preview on the taskbar right away; **Save** keeps them and **Cancel** (or Esc) undoes them |
 | **⟳** | Refresh now (at most once a minute) |
 | **Ctrl + drag** | Move the rings along the taskbar |
 | **Right-click** | Refresh · Settings · Scan for accounts · Start with Windows · Uninstall · Exit |
@@ -84,13 +85,14 @@ Everything is stored in `%APPDATA%\claude-usage-widget\config.json`. To open it,
 ```json
 {
   "refreshMinutes": 30,
+  "showPercents": true,
   "showNames": true,
   "showCaptions": true,
   "animations": true,
   "captions": { "5h": "5h", "7d": "7d", "fable": "Fable" },
   "accounts": [
     { "name": "claude-code", "label": "Personal", "source": "claude-code", "taskbar": true, "limits": ["5h", "7d", "fable"] },
-    { "name": "work",  "label": "Work",  "source": "xndr-claude", "style": "combined", "pie": "5h" },
+    { "name": "work",  "label": "Work",  "source": "xndr-claude", "style": "combined", "pie": "5h", "short": "Wk" },
     { "name": "vault", "label": "Vault", "source": "command", "command": "op read op://Private/claude/token" },
     { "name": "ci",    "label": "CI",    "source": "env", "env": "CLAUDE_CI_TOKEN", "fable": false }
   ]
@@ -104,9 +106,9 @@ Everything is stored in `%APPDATA%\claude-usage-widget\config.json`. To open it,
 | `command` | Whatever the command prints, for example a password manager CLI. |
 | `env` | An environment variable (read from your user environment, so one set while the widget runs works). The Token source in Settings creates these as `CLAUDE_USAGE_TOKEN_<NAME>`. |
 
-`"refreshMinutes"` sets how often it refreshes, 5 at the lowest. `"showNames"` and `"showCaptions"` turn the account names and ring captions on the taskbar on or off. `"animations"` turns the popup's fade and slide on or off.
+`"refreshMinutes"` sets how often it refreshes, 5 at the lowest. `"showPercents": false` shows only the rings, each with its account's initials inside. `"showNames"` and `"showCaptions"` turn the account names and ring captions on the taskbar on or off. `"animations"` turns the popup's fade and slide on or off.
 
-For each account, `"style": "combined"` shows 5h and 7d in one dial, and `"pie"` (`"5h"` or `"7d"`) picks which one goes in the middle. `"limits"` picks the rings in the Rings style. `"hidden": true` leaves an account out of the list and off the taskbar. `"fable": false` makes that account skip the Fable probe (see below).
+For each account, `"style": "combined"` shows 5h and 7d in one dial, and `"pie"` (`"5h"` or `"7d"`) picks which one goes in the middle (the inner ring when percentages are off). `"short"` sets the 1-2 initials shown inside its ring; leave it out for automatic ones. `"limits"` picks the rings in the Rings style. `"hidden": true` leaves an account out of the list and off the taskbar. `"fable": false` makes that account skip the Fable probe (see below).
 </details>
 
 ## How it works

@@ -3,6 +3,13 @@
 All notable changes to Claude Usage Widget. Versions follow [semantic versioning](https://semver.org/).
 Each version is a [GitHub release](https://github.com/mrcsXndr/claude-usage-widget/releases) with an installer.
 
+## [1.8.0] - 2026-10-13
+
+### Added
+- **Settings > Display > Percentages.** On by default (the look so far). Off, the taskbar shows only the rings, so many accounts fit: five Combined dials take about half the width. Combined becomes two rings (inner and outer) with the account's initials in the middle; Rings keeps one ring per limit with the initials inside each.
+- **Initials inside the ring.** Each account gets 1-2 characters: the first letter of its name, or two letters for accounts whose first letters clash (fadir and fable become Fa and Fb). Change them per account in Settings > Accounts (the arrow on the row > Initials); empty means automatic. Stored as `"short"` in config.json.
+- **Which ring is which.** Hovering an account on the taskbar now says where each limit sits (inner / outer ring, middle, or left / middle / right ring) and the colour thresholds, next to its percentages and reset times. The list has a one-line legend under it (for example "Inner 5h, outer 7d" and the green / amber / red key).
+
 ## [1.7.1] - 2026-10-10
 
 Small fixes ship as patch versions from now on.
