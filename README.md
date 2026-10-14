@@ -19,12 +19,12 @@ One account or several, updated in the background, in one click.
 ## Features
 
 - **Rings on the taskbar.** Each ring is green up to 70%, amber up to 90% and red after that. Hover a ring for its numbers, which ring is which, and its reset times.
-- **Compact when you have many accounts.** Turn **Percentages** off and the taskbar shows only the rings, with each account's initials inside (an automatic letter, two where first letters clash, or your own). Five Combined dials take about half the width they take with percentages.
+- **Compact when you have many accounts.** Choose what goes **inside the ring** (nothing, the account's initials, or the percentage) and what goes **next to the ring** (nothing, the caption, or the percentage); any combination works. Rings only, or small initials inside and nothing beside, takes about half the width of the full look. Initials are an automatic letter (two where first letters clash) or your own. **Size** is Compact, Normal or Large; Large also shows when each limit resets. Dividers between accounts are optional.
 - **Multiple accounts.** Tick the accounts you want on the taskbar and they sit side by side, each with its name.
 - **All limits in one click.** The list shows each account's 5-hour window, 7-day window and Fable weekly limit, with countdowns to the resets.
 - **Finds your accounts.** On first run it picks up the Claude Code logins on your PC (and [xndr-claude](https://github.com/mrcsXndr/xndr-claude) accounts if you use it).
 - **Two styles.** **Rings** gives each limit its own ring. **Combined** puts one limit as a pie in the middle and the other as the ring around it, with both percentages beside it. You choose which limit goes in the middle.
-- **Settings you can edit.** Rename accounts, choose each account's style and rings, show or hide account names and captions, rename the captions, set how often it refreshes, and turn animations on or off.
+- **Settings you can edit.** Rename accounts, choose each account's style and rings, choose what shows inside and next to the rings, the size, account names and dividers, rename the captions, set how often it refreshes, and turn animations on or off.
 - **Stays out of the way.** Refreshes every 30 minutes by default (5 minutes at the most frequent), and never more than once a minute when you refresh by hand. Catches up after sleep. Hides during full-screen apps. Follows the light or dark theme.
 - **Nothing to install besides itself.** It's plain PowerShell and WPF, which ship with Windows, so there are no runtimes, services or admin rights involved.
 
@@ -55,7 +55,7 @@ Running either one again updates you to the latest release and keeps your settin
 | --- | --- |
 | **Click** the rings | Open the account list |
 | **Tick** an account | Show it on the taskbar |
-| **⚙ Settings** | Rename accounts, set their initials, pick Rings or Combined, choose rings, toggle percentages, names, captions and animations, set the refresh interval. Settings opens as a normal, resizable window with tabs. Changes preview on the taskbar right away; **OK** or **Apply** keeps them and **Cancel** (or Esc, or the close button) undoes them |
+| **⚙ Settings** | Rename accounts, set their initials, pick Rings or Combined, choose rings, choose the size and what shows inside and next to the rings, toggle names, dividers and animations, set the refresh interval. Settings opens as a normal, resizable window with tabs. Changes preview on the taskbar right away; **OK** or **Apply** keeps them and **Cancel** (or Esc, or the close button) undoes them |
 | **⟳** | Refresh now (at most once a minute) |
 | **Ctrl + drag** | Move the rings along the taskbar |
 | **Right-click** | Refresh · Settings · Scan for accounts · Start with Windows · Uninstall · Exit |
@@ -106,9 +106,9 @@ Everything is stored in `%APPDATA%\claude-usage-widget\config.json`. To open it,
 | `command` | Whatever the command prints, for example a password manager CLI. |
 | `env` | An environment variable (read from your user environment, so one set while the widget runs works). The Token source in Settings creates these as `CLAUDE_USAGE_TOKEN_<NAME>`. |
 
-`"refreshMinutes"` sets how often it refreshes, 5 at the lowest. `"showPercents": false` shows only the rings, each with its account's initials inside. `"showNames"` and `"showCaptions"` turn the account names and ring captions on the taskbar on or off. `"animations"` turns the popup's fade and slide on or off.
+`"refreshMinutes"` sets how often it refreshes, 5 at the lowest. `"size"` is `"compact"` (default), `"normal"` or `"large"`. `"inside"` (`"none"`, `"initials"`, `"percent"`) and `"next"` (`"none"`, `"caption"`, `"percent"`) set what shows inside and next to each ring; when they are missing, the older `"showPercents": false` means initials inside and nothing beside, and `"showCaptions": false` drops the captions. `"showNames"` turns the account names on the taskbar on or off and `"showDividers": true` draws a line between accounts. `"animations"` turns the popup's fade and slide on or off.
 
-For each account, `"style": "combined"` shows 5h and 7d in one dial, and `"pie"` (`"5h"` or `"7d"`) picks which one goes in the middle (the inner ring when percentages are off). `"short"` sets the 1-2 initials shown inside its ring; leave it out for automatic ones. `"limits"` picks the rings in the Rings style. `"hidden": true` leaves an account out of the list and off the taskbar. `"fable": false` makes that account skip the Fable probe (see below).
+For each account, `"style": "combined"` shows 5h and 7d in one dial, and `"pie"` (`"5h"` or `"7d"`) picks which one goes in the middle (the inner ring when the percentage is not inside). `"short"` sets the 1-2 initials shown inside its ring; leave it out for automatic ones. `"limits"` picks the rings in the Rings style. `"hidden": true` leaves an account out of the list and off the taskbar. `"fable": false` makes that account skip the Fable probe (see below).
 </details>
 
 ## How it works
