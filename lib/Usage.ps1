@@ -25,7 +25,7 @@ $FableModel = 'claude-fable-5-1'
 $ClaudeCodeSystem = "You are Claude Code, Anthropic's official CLI for Claude."
 $LimitKeys  = @('5h', '7d', 'fable')
 $DefaultCaptions = [ordered]@{ '5h' = '5h'; '7d' = '7d'; 'fable' = 'Fable' }
-$AppVersion = '1.9.0'
+$AppVersion = '1.9.1'
 # Self-update: the latest-release API and the one installer URL "Update now" may run.
 $ReleaseApiUrl = 'https://api.github.com/repos/mrcsXndr/claude-usage-widget/releases/latest'
 $InstallerUrl  = 'https://github.com/mrcsXndr/claude-usage-widget/releases/latest/download/install.ps1'

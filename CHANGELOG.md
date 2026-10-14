@@ -3,6 +3,14 @@
 All notable changes to Claude Usage Widget. Versions follow [semantic versioning](https://semver.org/).
 Each version is a [GitHub release](https://github.com/mrcsXndr/claude-usage-widget/releases) with an installer.
 
+## [1.9.1] - 2026-10-15
+
+### Changed
+- **What the rings show is now two independent choices** (Settings > Display). **Inside the ring**: Nothing, Initials or Percentage. **Next to the ring**: Nothing, Caption (5h / 7d) or Percentage. Any combination works: rings only, rings with small initials, percentage inside plus caption beside, and so on. Turning percentages on no longer hides the initials. Existing configs keep their look (`showPercents` / `showCaptions` are still understood until you pick).
+- **Size**: Compact (as before), Normal or Large. Large shows each limit's reset time under the caption or percentage. The widget scales down to fit a short taskbar.
+- **Dividers between accounts** are an option, off by default (the spacing stays the same either way).
+- Spacing and text sizes derive from the chosen size, so rings, text and gaps stay in proportion.
+
 ## [1.9.0] - 2026-10-15
 
 ### Fixed
