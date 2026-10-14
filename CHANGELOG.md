@@ -3,6 +3,17 @@
 All notable changes to Claude Usage Widget. Versions follow [semantic versioning](https://semver.org/).
 Each version is a [GitHub release](https://github.com/mrcsXndr/claude-usage-widget/releases) with an installer.
 
+## [1.9.0] - 2026-10-15
+
+### Fixed
+- **Rings showed more than the real percentage.** The arc was drawn with round caps, which stick out half a stroke width past both ends and closed the gap: 91% looked like 95%, 50% like 54%. Arcs now use flat caps and end exactly at the percentage (100% is a full circle). `-RingCheck` renders 0, 25, 50, 91 and 100% at 100, 125 and 150% scaling, measures each arc from the pixels and fails if one is off by more than 1 degree.
+- **The widget flashed when you clicked it open or closed.** Closing rebuilt the whole list and the taskbar rose above the widget until a 750 ms timer put it back. The rings are now rebuilt only when something they show has changed (tooltips still refresh), nothing is rebuilt on close, and the widget is put back on top immediately.
+- **Switching Settings tabs resized the window.** Settings is now its own window with a fixed size, so tabs only swap what is inside it.
+
+### Changed
+- **Settings is a normal Windows window**: title bar, resizable with a minimum size, tabs (Accounts, Display, Captions, Updates) and **OK / Cancel / Apply**. It opens from the cog or right-click > Settings, and keeps its size while the widget runs. Edits still preview on the taskbar; Cancel, Esc and the close button undo them.
+- **Easier to read on a laptop.** Rings are 32 px instead of 30 with a thicker stroke, the numbers and initials are bold and larger, captions and names are brighter and larger, and there is more room between rings and accounts. Text uses pixel-snapped rendering at every display scale.
+
 ## [1.8.0] - 2026-10-13
 
 ### Added

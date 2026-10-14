@@ -55,7 +55,7 @@ Running either one again updates you to the latest release and keeps your settin
 | --- | --- |
 | **Click** the rings | Open the account list |
 | **Tick** an account | Show it on the taskbar |
-| **⚙ Settings** | Rename accounts, set their initials, pick Rings or Combined, choose rings, toggle percentages, names, captions and animations, set the refresh interval. Changes preview on the taskbar right away; **Save** keeps them and **Cancel** (or Esc) undoes them |
+| **⚙ Settings** | Rename accounts, set their initials, pick Rings or Combined, choose rings, toggle percentages, names, captions and animations, set the refresh interval. Settings opens as a normal, resizable window with tabs. Changes preview on the taskbar right away; **OK** or **Apply** keeps them and **Cancel** (or Esc, or the close button) undoes them |
 | **⟳** | Refresh now (at most once a minute) |
 | **Ctrl + drag** | Move the rings along the taskbar |
 | **Right-click** | Refresh · Settings · Scan for accounts · Start with Windows · Uninstall · Exit |
@@ -71,7 +71,7 @@ The widget finds accounts on its own:
 - **Claude Code logins.** It reads `%USERPROFILE%\.claude\.credentials.json`, which is where Claude Code keeps its login on Windows. It also checks any other `.claude*` folder in your user profile (for example one per account set up with `CLAUDE_CONFIG_DIR`). Accounts are named after the email they're logged in with.
 - **[xndr-claude](https://github.com/mrcsXndr/xndr-claude)** accounts, only if you happen to have it installed. It is optional; nothing else depends on it, and the widget shows it as a source only when it is found on the PC.
 
-You can also manage accounts from **Settings** (the cog): **Find new accounts** lists logins not added yet, **Add account** takes a name, a source and a plan, and the bin removes one. Save keeps the changes. The sources are:
+You can also manage accounts from **Settings** (the cog): **Find new accounts** lists logins not added yet, **Add account** takes a name, a source and a plan, and the bin removes one. OK or Apply keeps the changes. The sources are:
 
 - **Claude Code login**: pick the folder that holds the login (`.credentials.json`).
 - **Token**: paste a token from `claude setup-token`. The widget asks first ("Save this token as the Windows user environment variable `CLAUDE_USAGE_TOKEN_<NAME>`? It stays on this PC."), and only after you press Approve does it store the token there. The token is never written to the config file or the log; the config only holds the variable name. Setup tokens can't report their plan, so pick it yourself. Removing such an account offers to delete the variable too.

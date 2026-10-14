@@ -18,8 +18,11 @@
   Run with made-up accounts and no network; your config isn't touched.
 .PARAMETER Snapshot
   Render the demo UI to PNGs in this folder (used for the README) and exit.
+.PARAMETER RingCheck
+  Render the rings at known percentages, measure each arc's sweep from the pixels, print a table and exit
+  (exit code 1 when any arc is off by more than 1 degree).
 #>
-param([switch]$Once, [switch]$Demo, [string]$Snapshot)
+param([switch]$Once, [switch]$Demo, [string]$Snapshot, [switch]$RingCheck)
 
 $ErrorActionPreference = 'Stop'
 $LibPath = Join-Path $PSScriptRoot 'lib\Usage.ps1'
@@ -29,14 +32,14 @@ if ($Once) {
   Get-AllUsage (Read-Config) | ConvertTo-Json -Depth 4
   exit
 }
-if ($Snapshot) { $Demo = $true }
+if ($Snapshot -or $RingCheck) { $Demo = $true }
 
 # Source stays ASCII so Windows PowerShell 5.1 reads it correctly without a BOM.
 $ELL = [string][char]0x2026; $DOT = [string][char]0x00B7; $DASH = [string][char]0x2013
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 
-if (-not $Snapshot) {
+if (-not $Snapshot -and -not $RingCheck) {
   $createdNew = $false
   $mutexName = if ($Demo) { 'Local\claude-usage-widget-demo' } else { 'Local\claude-usage-widget' }
   $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$createdNew)
@@ -61,6 +64,9 @@ public static class CuwNative {
   public static void KeepOnTop(IntPtr h) { SetWindowPos(h, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); }
   // WS_EX_TOOLWINDOW: no Alt+Tab entry.
   public static void MakeToolWindow(IntPtr h) { SetWindowLong(h, -20, GetWindowLong(h, -20) | 0x80); }
+  [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int v, int size);
+  // Dark title bar for a normal window (Windows 10 20H1 and later; ignored elsewhere).
+  public static void DarkTitleBar(IntPtr h) { int v = 1; DwmSetWindowAttribute(h, 20, ref v, 4); }
 
   public static bool ForegroundIsFullscreen() {
     IntPtr h = GetForegroundWindow();
@@ -122,6 +128,7 @@ function Import-UiConfig {
 }
 
 function Save-UiConfig {
+  if ($script:editing) { Update-SettingsButtons }
   if ($Demo -or $script:editing) { return }
   try { Save-Config $script:config } catch { Write-Log "save config: $_" }
 }
@@ -230,7 +237,7 @@ function Set-Limit($name, $key, [bool]$on, $checkbox) {
 # ---------------------------------------------------------------- theme
 
 $isLight = $false
-if (-not $Snapshot) {
+if (-not $Snapshot -and -not $RingCheck) {
   try { $isLight = (Get-ItemPropertyValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' SystemUsesLightTheme) -eq 1 } catch {}
 }
 $Theme = if ($isLight) {
@@ -413,7 +420,7 @@ function Show-Toast([string]$title, [string]$text) {
       $ico = Join-Path $PSScriptRoot 'assets\icon.ico'
       $t.Icon = if (Test-Path $ico) { New-Object System.Drawing.Icon $ico } else { [System.Drawing.SystemIcons]::Information }
       $t.Text = 'Claude usage'
-      $t.Add_BalloonTipClicked({ Show-Popup $false })
+      $t.Add_BalloonTipClicked({ Show-Popup })
       $t.Add_BalloonTipClosed({ $script:tray.Visible = $false })
       $script:tray = $t
     }
@@ -423,8 +430,8 @@ function Show-Toast([string]$title, [string]$text) {
 }
 
 function Set-DemoUpdate {
-  $script:update = [pscustomobject]@{ version = '1.8.1'; notes = "Self-update check with a tray notification`nFaster refresh on wake" }
-  $script:updMsg = if ($script:updManual) { 'v1.8.1 is available' }
+  $script:update = [pscustomobject]@{ version = '1.9.1'; notes = "Self-update check with a tray notification`nFaster refresh on wake" }
+  $script:updMsg = if ($script:updManual) { 'v1.9.1 is available' }
 }
 
 function Start-UpdateCheck([switch]$Manual) {
@@ -513,7 +520,7 @@ function Complete-PendingUpdate {
         Title="Claude usage" WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         Topmost="True" ShowInTaskbar="False" ResizeMode="NoResize" SizeToContent="WidthAndHeight"
         UseLayoutRounding="True" FontFamily="Segoe UI Variable Text, Segoe UI">
-  <Border x:Name="Root" Background="#01000000" CornerRadius="6" Padding="8,4" Cursor="Hand">
+  <Border x:Name="Root" Background="#01000000" CornerRadius="6" Padding="8,4" Cursor="Hand" TextOptions.TextFormattingMode="Display">
     <Border.LayoutTransform><ScaleTransform x:Name="Scale" ScaleX="1" ScaleY="1"/></Border.LayoutTransform>
     <StackPanel x:Name="Groups" Orientation="Horizontal"/>
   </Border>
@@ -523,11 +530,16 @@ $widget = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader
 $WidgetEls = @{}
 foreach ($n in 'Root', 'Scale', 'Groups') { $WidgetEls[$n] = $widget.FindName($n) }
 
-function Set-Ring($path, $pct, [double]$size = 30, [double]$thick = 3.5) {
+$RingDip = 32; $RingThick = 4; $RingInnerDip = 19; $RingInnerThick = 2.5
+
+# The arc is drawn with flat caps and ends exactly at pct x 360 degrees. (Round caps stick out half a stroke
+# width past both ends, which closed the gap: 91% looked like 95%. Measured with -RingCheck.)
+function Set-Ring($path, $pct, [double]$size = $RingDip, [double]$thick = $RingThick) {
   $path.Stroke = Get-UsageColor $pct
   if ($null -eq $pct -or $pct -le 0) { $path.Data = $null; return }
-  $f = [Math]::Min(99.99, [double]$pct) / 100
-  $r = ($size - $thick) / 2; $c = $size / 2; $a = 2 * [Math]::PI * $f
+  $r = ($size - $thick) / 2; $c = $size / 2
+  if ($pct -ge 100) { $path.Data = New-Object Windows.Media.EllipseGeometry((New-Object Windows.Point($c, $c)), $r, $r); return }
+  $f = [double]$pct / 100; $a = 2 * [Math]::PI * $f
   $end = New-Object Windows.Point(($c + $r * [Math]::Sin($a)), ($c - $r * [Math]::Cos($a)))
   $seg = New-Object Windows.Media.ArcSegment($end, (New-Object Windows.Size($r, $r)), 0, ($f -gt 0.5), ([Windows.Media.SweepDirection]::Clockwise), $true)
   $fig = New-Object Windows.Media.PathFigure
@@ -540,7 +552,7 @@ function Set-Ring($path, $pct, [double]$size = 30, [double]$thick = 3.5) {
 
 # The ring is an even number of device pixels across, so its centre sits on a pixel boundary at any
 # display scale (30 DIP is 37.5 px at 125%, which put the centre half a pixel off and blurred one side).
-function Get-RingSize([double]$dip = 30) {
+function Get-RingSize([double]$dip = $RingDip) {
   $dpi = 1.0
   try { $dpi = [Windows.Media.VisualTreeHelper]::GetDpi($widget).DpiScaleX } catch {}
   return 2 * [Math]::Round($dip * $dpi / 2, [MidpointRounding]::AwayFromZero) / $dpi
@@ -551,16 +563,16 @@ function Get-RingSize([double]$dip = 30) {
 # With $short (percentages off) the account's initials take the percentage's place.
 function New-RingElement($pct, [string]$caption, [bool]$gapAfter, [string]$short) {
   $text = if ($short) { Esc $short } elseif ($null -ne $pct) { Format-Pct $pct } elseif ($script:job) { $ELL } else { $DASH }
-  $tsize = if ($short.Length -eq 1) { 12 } else { 10.5 }
+  $tsize = if ($short.Length -eq 1) { 13 } else { 11.5 }
   $sz = Get-RingSize
   $el = [Windows.Markup.XamlReader]::Parse(@"
-<StackPanel $ns Orientation="Horizontal" Margin="0,0,$(if ($gapAfter) { 10 } else { 0 }),0">
+<StackPanel $ns Orientation="Horizontal" Margin="0,0,$(if ($gapAfter) { 14 } else { 0 }),0">
   <Grid Width="$sz" Height="$sz">
-    <Ellipse Stroke="$($Theme.ring)" StrokeThickness="3.5"/>
-    <Path Name="Arc" StrokeThickness="3.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-    <TextBlock Text="$text" FontSize="$tsize" FontWeight="SemiBold" Foreground="$($Theme.fg)" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,1.3"/>
+    <Ellipse Stroke="$($Theme.ring)" StrokeThickness="$RingThick"/>
+    <Path Name="Arc" StrokeThickness="$RingThick"/>
+    <TextBlock Text="$text" FontSize="$tsize" FontWeight="Bold" Foreground="$($Theme.fg)" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,1.3"/>
   </Grid>
-  $(if (Test-Option 'showCaptions') { "<TextBlock Text=`"$(Esc $caption)`" FontSize=`"10`" Foreground=`"$($Theme.sub)`" VerticalAlignment=`"Center`" Margin=`"4,0,0,1.2`"/>" })
+  $(if (Test-Option 'showCaptions') { "<TextBlock Text=`"$(Esc $caption)`" FontSize=`"11`" FontWeight=`"SemiBold`" Foreground=`"$($Theme.fg)`" Opacity=`"0.8`" VerticalAlignment=`"Center`" Margin=`"5,0,0,1.2`"/>" })
 </StackPanel>
 "@)
   Set-Ring ($el.FindName('Arc')) $pct $sz
@@ -568,7 +580,7 @@ function New-RingElement($pct, [string]$caption, [bool]$gapAfter, [string]$short
 }
 
 # Filled wedge from 12 o'clock, clockwise.
-function Set-Pie($path, $pct, [double]$c = 15, [double]$r = 8.5) {
+function Set-Pie($path, $pct, [double]$c = ($RingDip / 2), [double]$r = 9.5) {
   $path.Fill = Get-UsageColor $pct
   if ($null -eq $pct -or $pct -le 0) { $path.Data = $null; return }
   if ($pct -ge 100) { $path.Data = New-Object Windows.Media.EllipseGeometry((New-Object Windows.Point($c, $c)), $r, $r); return }
@@ -591,42 +603,42 @@ function New-CombinedElement($cfg, $res, [string]$short) {
   $pieKey = if ($cfg.pie -eq '7d') { '7d' } else { '5h' }
   $ringKey = if ($pieKey -eq '5h') { '7d' } else { '5h' }
   if ($short) {
-    $sz = Get-RingSize; $in = Get-RingSize 18
+    $sz = Get-RingSize; $in = Get-RingSize $RingInnerDip
     $el = [Windows.Markup.XamlReader]::Parse(@"
 <Grid $ns Width="$sz" Height="$sz">
-  <Ellipse Stroke="$($Theme.ring)" StrokeThickness="3.5"/>
-  <Path Name="Arc" StrokeThickness="3.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-  <Ellipse Width="$in" Height="$in" Stroke="$($Theme.ring)" StrokeThickness="2" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-  <Path Name="Inner" Width="$in" Height="$in" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-  <TextBlock Text="$(Esc $short)" FontSize="$(if ($short.Length -eq 1) { 10.5 } else { 9 })" FontWeight="SemiBold" Foreground="$($Theme.fg)" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,1.2"/>
+  <Ellipse Stroke="$($Theme.ring)" StrokeThickness="$RingThick"/>
+  <Path Name="Arc" StrokeThickness="$RingThick"/>
+  <Ellipse Width="$in" Height="$in" Stroke="$($Theme.ring)" StrokeThickness="$RingInnerThick" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+  <Path Name="Inner" Width="$in" Height="$in" StrokeThickness="$RingInnerThick" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+  <TextBlock Text="$(Esc $short)" FontSize="$(if ($short.Length -eq 1) { 10.5 } else { 9.5 })" FontWeight="Bold" Foreground="$($Theme.fg)" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,1.2"/>
 </Grid>
 "@)
     Set-Ring ($el.FindName('Arc')) (Get-Win $res $ringKey).pct $sz
-    Set-Ring ($el.FindName('Inner')) (Get-Win $res $pieKey).pct $in 2
+    Set-Ring ($el.FindName('Inner')) (Get-Win $res $pieKey).pct $in $RingInnerThick
     return $el
   }
   $lines = foreach ($k in '5h', '7d') {
     $w = Get-Win $res $k
     $pct = if ($null -ne $w.pct) { "$(Format-Pct $w.pct)%" } elseif ($script:job) { $ELL } else { $DASH }
     $color = Get-UsageColor $w.pct
-    $mark = if ($k -eq $pieKey) { "<Ellipse Width=`"7`" Height=`"7`" Fill=`"$color`"/>" } else { "<Ellipse Width=`"7`" Height=`"7`" Stroke=`"$color`" StrokeThickness=`"1.6`"/>" }
-    $caption = if (Test-Option 'showCaptions') { "<Run Text=`" $(Esc (Get-Caption $k))`" Foreground=`"$($Theme.sub)`"/>" } else { '' }
-    "<StackPanel Orientation=`"Horizontal`"><Grid Width=`"8`" Height=`"8`" VerticalAlignment=`"Center`" Margin=`"0,1,5,0`">$mark</Grid><TextBlock FontSize=`"10`"><Run Text=`"$pct`" FontWeight=`"SemiBold`" Foreground=`"$($Theme.fg)`"/>$caption</TextBlock></StackPanel>"
+    $mark = if ($k -eq $pieKey) { "<Ellipse Width=`"8`" Height=`"8`" Fill=`"$color`"/>" } else { "<Ellipse Width=`"8`" Height=`"8`" Stroke=`"$color`" StrokeThickness=`"1.8`"/>" }
+    $caption = if (Test-Option 'showCaptions') { "<Run Text=`" $(Esc (Get-Caption $k))`" Foreground=`"$($Theme.fg)`" FontWeight=`"SemiBold`"/>" } else { '' }
+    "<StackPanel Orientation=`"Horizontal`"><Grid Width=`"9`" Height=`"9`" VerticalAlignment=`"Center`" Margin=`"0,1,5,0`">$mark</Grid><TextBlock FontSize=`"11`"><Run Text=`"$pct`" FontWeight=`"Bold`" Foreground=`"$($Theme.fg)`"/>$caption</TextBlock></StackPanel>"
   }
   $sz = Get-RingSize
   $el = [Windows.Markup.XamlReader]::Parse(@"
 <StackPanel $ns Orientation="Horizontal">
   <Grid Width="$sz" Height="$sz">
-    <Ellipse Stroke="$($Theme.ring)" StrokeThickness="3.5"/>
-    <Path Name="Arc" StrokeThickness="3.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-    <Ellipse Width="$($sz * 17 / 30)" Height="$($sz * 17 / 30)" Fill="$($Theme.ring)"/>
+    <Ellipse Stroke="$($Theme.ring)" StrokeThickness="$RingThick"/>
+    <Path Name="Arc" StrokeThickness="$RingThick"/>
+    <Ellipse Width="$($sz * 20 / 32)" Height="$($sz * 20 / 32)" Fill="$($Theme.ring)"/>
     <Path Name="Pie"/>
   </Grid>
-  <StackPanel VerticalAlignment="Center" Margin="6,0,0,0">$($lines -join '')</StackPanel>
+  <StackPanel VerticalAlignment="Center" Margin="7,0,0,0">$($lines -join '')</StackPanel>
 </StackPanel>
 "@)
   Set-Ring ($el.FindName('Arc')) (Get-Win $res $ringKey).pct $sz
-  Set-Pie ($el.FindName('Pie')) (Get-Win $res $pieKey).pct ($sz / 2) ($sz * 8.5 / 30)
+  Set-Pie ($el.FindName('Pie')) (Get-Win $res $pieKey).pct ($sz / 2) ($sz * 9.5 / 32)
   return $el
 }
 
@@ -661,27 +673,53 @@ function Get-AccountTip($cfg, $res) {
   return ($tip -join "`n")
 }
 
+function Get-AccountTipFor($name) {
+  if (-not $name) { return $(if ($script:job) { "Looking for accounts$ELL" } else { (Get-AccountTip $null $null) + "`nNo accounts yet: right-click > Scan for accounts" }) }
+  return (Get-AccountTip (Get-AcctCfg $name) (Get-Result $name))
+}
+
+# Everything that changes how the rings look. When it is the same as last time the rings are left alone
+# (rebuilding them every time is what made the widget flash on click and close); only the tooltips are refreshed.
+$script:widgetSig = $null
+function Get-WidgetSig($cfgs) {
+  $dpi = 1.0
+  try { $dpi = [Windows.Media.VisualTreeHelper]::GetDpi($widget).DpiScaleX } catch {}
+  $parts = @(($script:config | ConvertTo-Json -Depth 6 -Compress), "$dpi", "$([bool]$script:job)", "$($widget.IsLoaded)", "$(@($script:newAccts | ForEach-Object name) -join ',')", (Get-Shorts | ConvertTo-Json -Compress))
+  foreach ($cfg in $cfgs) {
+    $res = Get-Result $cfg.name
+    $parts += ($LimitKeys | ForEach-Object { "$((Get-Win $res $_).pct)" }) -join '/'
+  }
+  return ($parts -join '|')
+}
+
 function Update-Widget {
-  $WidgetEls.Groups.Children.Clear()
   $cfgs = @(Get-TaskbarCfgs)
+  $sig = Get-WidgetSig $cfgs
+  if ($sig -eq $script:widgetSig -and $WidgetEls.Groups.Children.Count) {
+    foreach ($g in $WidgetEls.Groups.Children) { if ($g -is [Windows.Controls.StackPanel]) { $g.ToolTip = Get-AccountTipFor $g.Tag } }
+    if ($widget.IsLoaded) { Set-WidgetPosition }
+    return
+  }
+  $script:widgetSig = $sig
+  $WidgetEls.Groups.Children.Clear()
   if (-not $cfgs.Count) {
     $g = New-Object Windows.Controls.StackPanel -Property @{ Orientation = 'Horizontal'; Background = '#01000000' }
     [void]$g.Children.Add((New-RingElement $null (Get-Caption '5h') $true))
     [void]$g.Children.Add((New-RingElement $null (Get-Caption '7d') $false))
-    $g.ToolTip = if ($script:job) { "Looking for accounts$ELL" } else { (Get-AccountTip $null $null) + "`nNo accounts yet: right-click > Scan for accounts" }
+    $g.ToolTip = Get-AccountTipFor $null
     [void]$WidgetEls.Groups.Children.Add($g)
   }
   # Percentages off: just the rings, each holding its account's initials.
   $shorts = if (-not (Test-Option 'showPercents')) { Get-Shorts } else { @{} }
   for ($i = 0; $i -lt $cfgs.Count; $i++) {
     $cfg = $cfgs[$i]; $res = Get-Result $cfg.name
-    $g = New-Object Windows.Controls.StackPanel -Property @{ Orientation = 'Horizontal'; Background = '#01000000' }
+    $g = New-Object Windows.Controls.StackPanel -Property @{ Orientation = 'Horizontal'; Background = '#01000000'; Tag = $cfg.name }
     if ($i -gt 0) {
-      [void]$g.Children.Add((New-Object Windows.Controls.Border -Property @{ Width = 1; Height = 22; Background = $Theme.ring; Margin = '10,0,10,0' }))
+      [void]$g.Children.Add((New-Object Windows.Controls.Border -Property @{ Width = 1; Height = 24; Background = $Theme.ring; Margin = '14,0,14,0' }))
     }
     if (Test-Option 'showNames') {
       [void]$g.Children.Add((New-Object Windows.Controls.TextBlock -Property @{
-        Text = (Get-Label $cfg); FontSize = 10.5; Foreground = $Theme.fg; Opacity = 0.85; MaxWidth = 90
+        Text = (Get-Label $cfg); FontSize = 11.5; FontWeight = 'SemiBold'; Foreground = $Theme.fg; Opacity = 0.9; MaxWidth = 100
         TextTrimming = 'CharacterEllipsis'; VerticalAlignment = 'Center'; Margin = '0,0,8,1.2'
       }))
     }
@@ -694,7 +732,7 @@ function Update-Widget {
         [void]$g.Children.Add((New-RingElement $w.pct (Get-Caption $keys[$k]) ($k -lt $keys.Count - 1) $shorts[$cfg.name]))
       }
     }
-    $g.ToolTip = Get-AccountTip $cfg $res
+    $g.ToolTip = Get-AccountTipFor $cfg.name
     [void]$WidgetEls.Groups.Children.Add($g)
   }
   if ($script:newAccts.Count) {
@@ -715,7 +753,7 @@ function Set-WidgetPosition {
   $atTop = $wa.Top -gt 0
   $tb = if ($atTop) { $wa.Top } else { $sh - $wa.Bottom }
   if ($tb -lt 20) { $tb = 48 }  # auto-hidden taskbar: assume the default height
-  $s = [Math]::Min(1.0, ($tb - 6) / 38)
+  $s = [Math]::Min(1.0, ($tb - 6) / ($RingDip + 8))
   $WidgetEls.Scale.ScaleX = $s; $WidgetEls.Scale.ScaleY = $s
   $widget.UpdateLayout()
   $h = $widget.ActualHeight; $w = $widget.ActualWidth
@@ -886,8 +924,6 @@ function Set-WidgetPosition {
       <DockPanel Margin="8,4,2,6">
         <Button x:Name="RefreshBtn" DockPanel.Dock="Right" Style="{StaticResource IconBtn}" Content="&#xE72C;" VerticalAlignment="Top"/>
         <Button x:Name="EditBtn" DockPanel.Dock="Right" Style="{StaticResource IconBtn}" Content="&#xE713;" ToolTip="Settings" VerticalAlignment="Top"/>
-        <Button x:Name="SaveBtn" DockPanel.Dock="Right" Style="{StaticResource AccentBtn}" Content="Save" Visibility="Collapsed" VerticalAlignment="Center"/>
-        <Button x:Name="CancelBtn" DockPanel.Dock="Right" Style="{StaticResource TextBtn}" Content="Cancel" Visibility="Collapsed" VerticalAlignment="Center"/>
         <StackPanel>
           <TextBlock x:Name="Title" Text="Claude usage" FontSize="14" FontWeight="SemiBold" Foreground="$($Theme.fg)"/>
           <TextBlock x:Name="Status" FontSize="11" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="0,1,0,0"/>
@@ -902,54 +938,8 @@ function Set-WidgetPosition {
           </StackPanel>
         </DockPanel>
       </Border>
-      <StackPanel x:Name="TabBar" Orientation="Horizontal" Margin="2,0,2,8" Visibility="Collapsed">
-        <RadioButton x:Name="Tab_acct" Style="{StaticResource Seg}" GroupName="tabs" Content="Accounts" IsChecked="True"/>
-        <RadioButton x:Name="Tab_disp" Style="{StaticResource Seg}" GroupName="tabs" Content="Display"/>
-        <RadioButton x:Name="Tab_cap" Style="{StaticResource Seg}" GroupName="tabs" Content="Captions"/>
-        <RadioButton x:Name="Tab_upd" Style="{StaticResource Seg}" GroupName="tabs" Content="Updates"/>
-      </StackPanel>
       <StackPanel x:Name="NewAcctBox"/>
       <StackPanel x:Name="List"/>
-      <StackPanel x:Name="CaptionPanel" Margin="10,6,10,2" Visibility="Collapsed">
-        <StackPanel x:Name="PanAcct">
-          <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
-            <Button x:Name="FindBtn" Style="{StaticResource TextBtn}" Content="Find new accounts" Margin="-6,0,0,0"/>
-            <Button x:Name="AddBtn" Style="{StaticResource TextBtn}" Content="Add account"/>
-          </StackPanel>
-          <TextBlock x:Name="AcctMsg" FontSize="11" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed"/>
-          <StackPanel x:Name="AcctTools"/>
-        </StackPanel>
-        <StackPanel x:Name="PanDisp">
-          <DockPanel Margin="0,0,0,8">
-            <CheckBox x:Name="OptPcts" DockPanel.Dock="Left" Content="Percentages" VerticalAlignment="Top"/>
-            <TextBlock Text="Off: only the rings, with each account's initials inside (set them per account under Accounts). Hover the rings for the numbers." FontSize="10.5" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="12,1,0,0"/>
-          </DockPanel>
-          <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-            <CheckBox x:Name="OptNames" Content="Account names" Margin="0,0,18,0"/>
-            <CheckBox x:Name="OptCaptions" Content="Captions" Margin="0,0,18,0"/>
-            <CheckBox x:Name="OptAnim" Content="Animations"/>
-          </StackPanel>
-          <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-            <TextBlock Text="Refresh every" FontSize="11.5" Foreground="$($Theme.fg)" VerticalAlignment="Center" Margin="0,0,8,0"/>
-            <TextBox x:Name="OptRefresh" Width="46" TextAlignment="Center" ToolTip="Minutes between refreshes (5 or more)"/>
-            <TextBlock Text="minutes (5 or more)" FontSize="11.5" Foreground="$($Theme.sub)" VerticalAlignment="Center" Margin="8,0,0,0"/>
-          </StackPanel>
-        </StackPanel>
-        <StackPanel x:Name="PanUpd">
-          <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-            <CheckBox x:Name="OptUpdates" Content="Check for updates daily" VerticalAlignment="Center"/>
-            <Button x:Name="UpdCheckBtn" Style="{StaticResource TextBtn}" Content="Check now" Margin="8,0,0,0"/>
-          </StackPanel>
-          <TextBlock x:Name="UpdMsg" FontSize="11" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="0,0,0,12"/>
-        </StackPanel>
-        <StackPanel x:Name="PanCap">
-          <UniformGrid Columns="3">
-            <DockPanel Margin="0,0,6,0"><TextBlock DockPanel.Dock="Top" Text="5-hour" FontSize="10.5" Foreground="$($Theme.sub)" Margin="0,0,0,3"/><TextBox x:Name="Cap_5h"/></DockPanel>
-            <DockPanel Margin="3,0,3,0"><TextBlock DockPanel.Dock="Top" Text="7-day" FontSize="10.5" Foreground="$($Theme.sub)" Margin="0,0,0,3"/><TextBox x:Name="Cap_7d"/></DockPanel>
-            <DockPanel Margin="6,0,0,0"><TextBlock DockPanel.Dock="Top" Text="Fable weekly" FontSize="10.5" Foreground="$($Theme.sub)" Margin="0,0,0,3"/><TextBox x:Name="Cap_fable"/></DockPanel>
-          </UniformGrid>
-        </StackPanel>
-      </StackPanel>
       <TextBlock x:Name="Legend" FontSize="10.5" Foreground="$($Theme.sub)" Margin="10,8,10,0" TextWrapping="Wrap"/>
       <TextBlock x:Name="Footer" FontSize="10.5" Foreground="$($Theme.sub)" Margin="10,8,10,2" TextWrapping="Wrap"/>
     </StackPanel>
@@ -958,7 +948,94 @@ function Set-WidgetPosition {
 "@
 $popup = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $popupXaml))
 $PopupEls = @{}
-foreach ($n in 'Card', 'Slide', 'RefreshBtn', 'EditBtn', 'SaveBtn', 'CancelBtn', 'Title', 'Status', 'List', 'CaptionPanel', 'Cap_5h', 'Cap_7d', 'Cap_fable', 'OptPcts', 'OptNames', 'OptCaptions', 'OptAnim', 'OptRefresh', 'Legend', 'Footer', 'FindBtn', 'AddBtn', 'AcctMsg', 'AcctTools', 'UpdBox', 'UpdBtn', 'UpdTitle', 'UpdNotes', 'OptUpdates', 'UpdCheckBtn', 'UpdMsg', 'TabBar', 'NewAcctBox', 'PanAcct', 'PanDisp', 'PanUpd', 'PanCap', 'Tab_acct', 'Tab_disp', 'Tab_cap', 'Tab_upd') { $PopupEls[$n] = $popup.FindName($n) }
+foreach ($n in 'Card', 'Slide', 'RefreshBtn', 'EditBtn', 'Title', 'Status', 'List', 'Legend', 'Footer', 'UpdBox', 'UpdBtn', 'UpdTitle', 'UpdNotes', 'NewAcctBox') { $PopupEls[$n] = $popup.FindName($n) }
+
+# ---------------------------------------------------------------- settings window
+# A normal, resizable window (title bar, minimum size, OK / Cancel / Apply). Its size is fixed by the user, never by
+# the tab shown: the tab panels sit in a scroll area, so switching tabs cannot move or resize anything.
+# Edits preview live on the taskbar; OK or Apply keeps them, Cancel (or Esc, or the close button) undoes them.
+
+[xml]$settingsXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Claude Usage Widget - Settings" Width="740" Height="660" MinWidth="600" MinHeight="480"
+        WindowStartupLocation="CenterScreen" ResizeMode="CanResize" ShowInTaskbar="True"
+        Background="$($Theme.card)" UseLayoutRounding="True" SnapsToDevicePixels="True"
+        FontFamily="Segoe UI Variable Text, Segoe UI" TextElement.Foreground="$($Theme.fg)">
+  <Grid>
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <Border Grid.Row="0" Padding="20,16,20,12" BorderBrush="$($Theme.border)" BorderThickness="0,0,0,1">
+      <StackPanel Orientation="Horizontal">
+        <RadioButton x:Name="Tab_acct" Style="{DynamicResource Seg}" GroupName="tabs" Content="Accounts" IsChecked="True" FontSize="13"/>
+        <RadioButton x:Name="Tab_disp" Style="{DynamicResource Seg}" GroupName="tabs" Content="Display" FontSize="13"/>
+        <RadioButton x:Name="Tab_cap" Style="{DynamicResource Seg}" GroupName="tabs" Content="Captions" FontSize="13"/>
+        <RadioButton x:Name="Tab_upd" Style="{DynamicResource Seg}" GroupName="tabs" Content="Updates" FontSize="13"/>
+      </StackPanel>
+    </Border>
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <Grid Margin="20,16,20,20">
+        <StackPanel x:Name="PanAcct">
+          <TextBlock Text="Tick an account to show it on the taskbar. The arrows set the order. The bin removes an account from the widget only; your Claude login stays." FontSize="12" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="0,0,0,10"/>
+          <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+            <Button x:Name="FindBtn" Style="{DynamicResource TextBtn}" Content="Find new accounts" Margin="-6,0,0,0"/>
+            <Button x:Name="AddBtn" Style="{DynamicResource TextBtn}" Content="Add account"/>
+          </StackPanel>
+          <TextBlock x:Name="AcctMsg" FontSize="12" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed"/>
+          <StackPanel x:Name="AcctTools"/>
+          <StackPanel x:Name="SNewAcctBox" Margin="0,8,0,0"/>
+          <StackPanel x:Name="SList" Margin="0,6,0,0"/>
+          <TextBlock Text="Rings shows one ring per limit. Combined shows 5h and 7d in one dial. Plan: Auto shows what the API reports; setup-tokens can't read it, so pick theirs." FontSize="11.5" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="2,10,2,0"/>
+        </StackPanel>
+        <StackPanel x:Name="PanDisp">
+          <CheckBox x:Name="OptPcts" Content="Percentages" FontSize="13"/>
+          <TextBlock Text="Off: only the rings, with each account's initials inside (set them per account under Accounts). Hover the rings for the numbers." FontSize="12" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="22,2,0,14"/>
+          <CheckBox x:Name="OptNames" Content="Account names" FontSize="13"/>
+          <TextBlock Text="Show each account's name before its rings." FontSize="12" Foreground="$($Theme.sub)" Margin="22,2,0,14"/>
+          <CheckBox x:Name="OptCaptions" Content="Captions" FontSize="13"/>
+          <TextBlock Text="Show 5h / 7d next to the rings. Rename them under Captions." FontSize="12" Foreground="$($Theme.sub)" Margin="22,2,0,14"/>
+          <CheckBox x:Name="OptAnim" Content="Animations" FontSize="13"/>
+          <TextBlock Text="Fade and slide the account list in and out." FontSize="12" Foreground="$($Theme.sub)" Margin="22,2,0,18"/>
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="Refresh every" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <TextBox x:Name="OptRefresh" Width="56" TextAlignment="Center" FontSize="13" ToolTip="Minutes between refreshes (5 or more)"/>
+            <TextBlock Text="minutes (5 or more)" FontSize="12" Foreground="$($Theme.sub)" VerticalAlignment="Center" Margin="8,0,0,0"/>
+          </StackPanel>
+        </StackPanel>
+        <StackPanel x:Name="PanCap">
+          <TextBlock Text="The short names shown next to the rings and in the list." FontSize="12" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="0,0,0,10"/>
+          <UniformGrid Columns="3">
+            <DockPanel Margin="0,0,6,0"><TextBlock DockPanel.Dock="Top" Text="5-hour" FontSize="12" Foreground="$($Theme.sub)" Margin="0,0,0,3"/><TextBox x:Name="Cap_5h" FontSize="13"/></DockPanel>
+            <DockPanel Margin="3,0,3,0"><TextBlock DockPanel.Dock="Top" Text="7-day" FontSize="12" Foreground="$($Theme.sub)" Margin="0,0,0,3"/><TextBox x:Name="Cap_7d" FontSize="13"/></DockPanel>
+            <DockPanel Margin="6,0,0,0"><TextBlock DockPanel.Dock="Top" Text="Fable weekly" FontSize="12" Foreground="$($Theme.sub)" Margin="0,0,0,3"/><TextBox x:Name="Cap_fable" FontSize="13"/></DockPanel>
+          </UniformGrid>
+        </StackPanel>
+        <StackPanel x:Name="PanUpd">
+          <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+            <CheckBox x:Name="OptUpdates" Content="Check for updates daily" FontSize="13" VerticalAlignment="Center"/>
+            <Button x:Name="UpdCheckBtn" Style="{DynamicResource TextBtn}" Content="Check now" Margin="8,0,0,0"/>
+          </StackPanel>
+          <TextBlock x:Name="UpdMsg" FontSize="12" Foreground="$($Theme.sub)" TextWrapping="Wrap" Margin="0,0,0,12"/>
+        </StackPanel>
+      </Grid>
+    </ScrollViewer>
+    <Border Grid.Row="2" Padding="20,10,14,12" Background="$($Theme.hover)" BorderBrush="$($Theme.border)" BorderThickness="0,1,0,0">
+      <DockPanel>
+        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+          <Button x:Name="SApplyBtn" Style="{DynamicResource TextBtn}" Content="Apply" MinWidth="64"/>
+          <Button x:Name="SCancelBtn" Style="{DynamicResource TextBtn}" Content="Cancel" MinWidth="64"/>
+          <Button x:Name="SOkBtn" Style="{DynamicResource AccentBtn}" Content="OK" MinWidth="64"/>
+        </StackPanel>
+        <TextBlock x:Name="SStatus" Text="Changes preview on the taskbar. OK or Apply keeps them; Cancel undoes them." FontSize="12" Foreground="$($Theme.sub)" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+      </DockPanel>
+    </Border>
+  </Grid>
+</Window>
+"@
+$settings = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $settingsXaml))
+$settings.Resources.MergedDictionaries.Add($PopupEls.Card.Resources)
+foreach ($n in 'Cap_5h', 'Cap_7d', 'Cap_fable', 'OptPcts', 'OptNames', 'OptCaptions', 'OptAnim', 'OptRefresh', 'FindBtn', 'AddBtn', 'AcctMsg', 'AcctTools', 'OptUpdates', 'UpdCheckBtn', 'UpdMsg', 'SNewAcctBox', 'SList', 'PanAcct', 'PanDisp', 'PanUpd', 'PanCap', 'Tab_acct', 'Tab_disp', 'Tab_cap', 'Tab_upd', 'SApplyBtn', 'SCancelBtn', 'SOkBtn', 'SStatus') { $PopupEls[$n] = $settings.FindName($n) }
+$settingsIcon = Join-Path $PSScriptRoot 'assets\icon.ico'
+if (Test-Path $settingsIcon) { try { $settings.Icon = [Windows.Media.Imaging.BitmapFrame]::Create((New-Object Uri $settingsIcon)) } catch {} }
 $script:editing = $false
 $script:tab = 'acct'          # Settings tab: acct | disp | cap | upd
 $script:expanded = $null      # account whose details are open in the Accounts tab ('' = none)
@@ -996,11 +1073,11 @@ function Get-Note($res) {
   }
 }
 
-function New-AccountRow($cfg, $shownNames) {
+function New-AccountRow($cfg, $shownNames, [bool]$edit) {
   $res = Get-Result $cfg.name
   $label = Esc (Get-Label $cfg)
   $plan = Esc $(if (Get-Plan $cfg $res) { "   $(Get-Plan $cfg $res)" } else { '' })
-  if ($script:editing) {
+  if ($edit) {
     $open = $script:expanded -eq $cfg.name
     $limits = @(Get-TaskbarLimits $cfg)
     $combined = $cfg.style -eq 'combined'
@@ -1161,20 +1238,16 @@ function Update-RefreshButton {
   $PopupEls.RefreshBtn.ToolTip = if ($script:job) { "Refreshing$ELL" } elseif ($cd) { "You can refresh again in ${cd}s" } else { 'Refresh now' }
 }
 
-function Update-Popup {
+# The account list (the popup). Settings is its own window: Update-Settings. Edit flows call this to refresh both;
+# -ListOnly leaves an open Settings window alone (rebuilding it would take the focus from someone typing).
+function Update-Popup([switch]$ListOnly) {
   Update-RefreshButton
-  $normal = if ($script:editing) { 'Collapsed' } else { 'Visible' }
-  $edit = if ($script:editing) { 'Visible' } else { 'Collapsed' }
-  $PopupEls.RefreshBtn.Visibility = $normal; $PopupEls.EditBtn.Visibility = $normal
-  $PopupEls.SaveBtn.Visibility = $edit; $PopupEls.CancelBtn.Visibility = $edit
-  $PopupEls.Title.Text = if ($script:editing) { 'Settings' } else { 'Claude usage' }
-  $PopupEls.Status.Text = if ($script:editing) { 'Preview only until you save' }
-    elseif ($script:job) { if ($script:job.discover) { "Scanning for accounts$ELL" } else { "Refreshing$ELL" } }
+  $PopupEls.Status.Text = if ($script:job) { if ($script:job.discover) { "Scanning for accounts$ELL" } else { "Refreshing$ELL" } }
     elseif ($script:lastError) { "Error: $($script:lastError)" }
     elseif ($script:configError) { $script:configError }
     elseif ($script:updated) { "Updated {0:HH:mm} $DOT every {1} min{2}" -f $script:updated, (Get-RefreshMinutes), $(if ($script:notice) { " $DOT $($script:notice)" }) }
     else { '' }
-  $PopupEls.Status.Foreground = if (-not $script:editing -and -not $script:job -and ($script:lastError -or $script:configError)) { $Colors.bad } else { $Theme.sub }
+  $PopupEls.Status.Foreground = if (-not $script:job -and ($script:lastError -or $script:configError)) { $Colors.bad } else { $Theme.sub }
 
   $PopupEls.UpdBox.Visibility = if ($script:update) { 'Visible' } else { 'Collapsed' }
   if ($script:update) {
@@ -1185,56 +1258,59 @@ function Update-Popup {
     $PopupEls.UpdBtn.IsEnabled = -not $script:updatingSince
   }
 
-  $PopupEls.TabBar.Visibility = $edit
-  $acctTab = -not $script:editing -or $script:tab -eq 'acct'
   $PopupEls.List.Children.Clear()
-  $PopupEls.List.Visibility = if ($acctTab) { 'Visible' } else { 'Collapsed' }
-  $shown =@(Get-TaskbarCfgs | ForEach-Object name)
+  $shown = @(Get-TaskbarCfgs | ForEach-Object name)
   $cfgs = Get-Visible
-  if ($script:editing -and $null -eq $script:expanded -and @($cfgs).Count) { $script:expanded = @($cfgs)[0].name }
-  if ($acctTab) { foreach ($cfg in $cfgs) { [void]$PopupEls.List.Children.Add((New-AccountRow $cfg $shown)) } }
-  if ($acctTab -and -not @($cfgs).Count) {
+  foreach ($cfg in $cfgs) { [void]$PopupEls.List.Children.Add((New-AccountRow $cfg $shown $false)) }
+  if (-not @($cfgs).Count) {
     $empty = New-Object Windows.Controls.TextBlock
     $empty.Text = if ($script:job) { "Looking for accounts$ELL" } else { 'No accounts found. Log in with Claude Code (run claude), then right-click the rings > Scan for accounts.' }
     $empty.Foreground = $Theme.sub; $empty.Margin = '10,8'; $empty.TextWrapping = 'Wrap'
     [void]$PopupEls.List.Children.Add($empty)
   }
-
-  $PopupEls.CaptionPanel.Visibility = if ($script:editing) { 'Visible' } else { 'Collapsed' }
-  if ($script:editing) {
-    $script:loadingCaptions = $true
-    foreach ($k in $LimitKeys) { $PopupEls["Cap_$k"].Text = Get-Caption $k }
-    $PopupEls.OptPcts.IsChecked = Test-Option 'showPercents'
-    $PopupEls.OptNames.IsChecked = Test-Option 'showNames'
-    $PopupEls.OptCaptions.IsChecked = Test-Option 'showCaptions'
-    $PopupEls.OptAnim.IsChecked = Test-Option 'animations'
-    $PopupEls.OptUpdates.IsChecked = Test-Option 'updateCheck'
-    $PopupEls.UpdMsg.Text = if ($script:updMsg) { $script:updMsg } else { "Version $AppVersion" }
-    $PopupEls.OptRefresh.Text = "$(Get-RefreshMinutes)"
-    $script:loadingCaptions = $false
-    foreach ($t in 'acct', 'disp', 'cap', 'upd') {
-      $PopupEls["Pan$((Get-Culture).TextInfo.ToTitleCase($t))"].Visibility = 'Collapsed'
-      $PopupEls["Tab_$t"].IsChecked = $script:tab -eq $t
-    }
-    $PopupEls["Pan$((Get-Culture).TextInfo.ToTitleCase($script:tab))"].Visibility = 'Visible'
-    if ($script:tab -eq 'acct') { Show-AcctTool }
-  }
   Update-NewAcctBox
   Update-Legend
-  $PopupEls.Footer.Visibility = if ($acctTab) { 'Visible' } else { 'Collapsed' }
-  $PopupEls.Footer.Text = if ($script:editing) {
-    "The bin removes an account from the widget only; your login stays. Tick an account to show it on the taskbar; the arrows set the order. Rings shows one ring per limit; Combined shows 5h and 7d in one dial. Plan: Auto shows what the API reports; setup-tokens can't read it, so pick theirs."
-  } else {
-    "Tick accounts to show them on the taskbar $DOT Ctrl+drag the rings to move them"
+  $PopupEls.Footer.Text = "Tick accounts to show them on the taskbar $DOT Ctrl+drag the rings to move them"
+  if (-not $ListOnly -and $script:editing -and $settings.IsVisible) { Update-Settings }
+}
+
+# The Settings window: the active tab's panel, and the values every control starts from.
+function Update-Settings {
+  $acct = $script:tab -eq 'acct'
+  $PopupEls.SList.Children.Clear()
+  $shown = @(Get-TaskbarCfgs | ForEach-Object name)
+  $cfgs = Get-Visible
+  if ($null -eq $script:expanded -and @($cfgs).Count) { $script:expanded = @($cfgs)[0].name }
+  if ($acct) { foreach ($cfg in $cfgs) { [void]$PopupEls.SList.Children.Add((New-AccountRow $cfg $shown $true)) } }
+  $script:loadingCaptions = $true
+  foreach ($k in $LimitKeys) { $PopupEls["Cap_$k"].Text = Get-Caption $k }
+  $PopupEls.OptPcts.IsChecked = Test-Option 'showPercents'
+  $PopupEls.OptNames.IsChecked = Test-Option 'showNames'
+  $PopupEls.OptCaptions.IsChecked = Test-Option 'showCaptions'
+  $PopupEls.OptAnim.IsChecked = Test-Option 'animations'
+  $PopupEls.OptUpdates.IsChecked = Test-Option 'updateCheck'
+  $PopupEls.UpdMsg.Text = if ($script:updMsg) { $script:updMsg } else { "Version $AppVersion" }
+  $PopupEls.OptRefresh.Text = "$(Get-RefreshMinutes)"
+  $script:loadingCaptions = $false
+  foreach ($t in 'acct', 'disp', 'cap', 'upd') {
+    $PopupEls["Pan$((Get-Culture).TextInfo.ToTitleCase($t))"].Visibility = if ($script:tab -eq $t) { 'Visible' } else { 'Collapsed' }
+    $PopupEls["Tab_$t"].IsChecked = $script:tab -eq $t
   }
+  if ($acct) { Show-AcctTool }
+  Update-NewAcctBox
+  Update-SettingsButtons
+}
+
+# Apply is live only while something differs from the last saved state.
+function Update-SettingsButtons {
+  $dirty = $script:editing -and $script:configBackup -and (($script:config | ConvertTo-Json -Depth 8) -ne $script:configBackup)
+  $PopupEls.SApplyBtn.IsEnabled = [bool]$dirty
 }
 
 # One line under the list: which ring is which on the taskbar, and what the colours mean.
 function Update-Legend {
   $t = $PopupEls.Legend
   $t.Inlines.Clear()
-  $t.Visibility = if ($script:editing) { 'Collapsed' } else { 'Visible' }
-  if ($script:editing) { return }
   $cfgs = @(Get-TaskbarCfgs)
   $parts = @()
   $pies = @($cfgs | Where-Object { $_.style -eq 'combined' } | ForEach-Object { if ($_.pie -eq '7d') { '7d' } else { '5h' } } | Select-Object -Unique)
@@ -1285,10 +1361,13 @@ function Skip-NewAcct($a) {
 }
 
 function Update-NewAcctBox {
-  $box = $PopupEls.NewAcctBox
-  $box.Children.Clear()
-  if (-not $script:newAccts.Count -or ($script:editing -and $script:tab -ne 'acct')) { return }
-  foreach ($a in $script:newAccts) {
+  foreach ($box in $PopupEls.NewAcctBox, $PopupEls.SNewAcctBox) {
+    $box.Children.Clear()
+    foreach ($a in $script:newAccts) { [void]$box.Children.Add((New-NewAcctRow $a)) }
+  }
+}
+
+function New-NewAcctRow($a) {
     $plan = "$($a.plan)".Trim()
     $row = [Windows.Markup.XamlReader]::Parse(@"
 <Border $ns Background="$($Theme.hover)" BorderBrush="$($Colors.accent)" BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="2,0,2,6">
@@ -1301,8 +1380,7 @@ function Update-NewAcctBox {
 "@)
     $add = $row.FindName('NAdd'); $add.Tag = $a; $add.Add_Click({ param($s) Add-NewAcct $s.Tag })
     $ign = $row.FindName('NIgn'); $ign.Tag = $a; $ign.Add_Click({ param($s) Skip-NewAcct $s.Tag })
-    [void]$box.Children.Add($row)
-  }
+    return $row
 }
 
 function Move-Account([string]$name, [int]$by) {
@@ -1316,11 +1394,6 @@ function Move-Account([string]$name, [int]$by) {
   Save-UiConfig  # while Settings is open this waits for Save, like every other edit
   Update-Widget
   Update-Popup
-}
-
-foreach ($t in 'acct', 'disp', 'cap', 'upd') {
-  $PopupEls["Tab_$t"].Tag = $t
-  $PopupEls["Tab_$t"].Add_Checked({ param($s) if ($script:tab -ne $s.Tag) { $script:tab = $s.Tag; Update-Popup } })
 }
 
 foreach ($k in $LimitKeys) {
@@ -1455,10 +1528,9 @@ function Complete-Find {
   if (-not ($failed -and $script:findAuto)) { $script:found = $list }
   Update-NewAccts
   Update-Widget
-  if ($popup.IsVisible) {
-    # Rebuilding the whole list under someone typing in Settings would steal their focus.
-    if ($script:editing) { Update-NewAcctBox; if ($script:tab -eq 'acct') { Show-AcctTool } } else { Update-Popup }
-  }
+  # Rebuilding the whole list under someone typing in Settings would steal their focus.
+  if ($popup.IsVisible) { Update-Popup -ListOnly }
+  if ($script:editing -and $settings.IsVisible) { Update-NewAcctBox; if ($script:tab -eq 'acct') { Show-AcctTool } }
 }
 
 # On startup and then hourly (see the minute timer): look for accounts the widget doesn't have.
@@ -1678,10 +1750,8 @@ function Show-AddTool($pan) {
     $dlg.Description = 'Pick the folder that holds the Claude Code login (.credentials.json)'
     $dlg.ShowNewFolderButton = $false
     $dlg.SelectedPath = $HOME
-    # The dialog takes focus from the popup; without this the popup would close (and keep) the settings.
-    $script:modal = $true; $popup.Topmost = $false
     try { if ($dlg.ShowDialog() -eq 'OK') { $script:nfEls.input.Text = $dlg.SelectedPath } }
-    finally { $dlg.Dispose(); $popup.Topmost = $true; $script:modal = $false; [void]$popup.Activate() }
+    finally { $dlg.Dispose(); [void]$settings.Activate() }
   })
   Update-NfSource
   [void]$pan.Children.Add($form)
@@ -1836,15 +1906,20 @@ function Start-PopupEntrance {
   }
 }
 
-# Soft cross-fade when switching between the list and settings.
-function Start-ContentFade {
-  if (Test-Option 'animations') { $PopupEls.Card.BeginAnimation([Windows.UIElement]::OpacityProperty, (New-Ease 0.35 1 160)) }
-}
-
-function Switch-PopupMode([scriptblock]$change) {
-  & $change
-  Update-Popup
-  Start-ContentFade
+# The taskbar rises above the widget whenever the popup opens or closes; put the widget back on top at once
+# (and a few times over the next half second) instead of waiting for the 750 ms timer, which showed as a flash.
+$script:raiseLeft = 0
+$raiseTimer = New-Object Windows.Threading.DispatcherTimer
+$raiseTimer.Interval = [TimeSpan]::FromMilliseconds(100)
+$raiseTimer.Add_Tick({
+  if ($script:hwnd -ne [IntPtr]::Zero) { [CuwNative]::KeepOnTop($script:hwnd) }
+  $script:raiseLeft--
+  if ($script:raiseLeft -le 0) { $raiseTimer.Stop() }
+})
+function Start-Raise {
+  if ($script:hwnd -ne [IntPtr]::Zero) { [CuwNative]::KeepOnTop($script:hwnd) }
+  $script:raiseLeft = 5
+  $raiseTimer.Start()
 }
 
 # Settings work on the live config (so the taskbar previews them) with a copy to go back to.
@@ -1871,25 +1946,55 @@ function Stop-Editing([bool]$keep) {
   $script:acctsChanged = $false
 }
 
+# Apply: keep what has been edited so far and stay in Settings.
+function Save-Editing {
+  if (-not $script:editing) { return }
+  if (-not $Demo) { Complete-EnvChanges $true }
+  $script:editing = $false
+  Save-UiConfig
+  $script:editing = $true
+  $script:configBackup = $script:config | ConvertTo-Json -Depth 8
+  if ($script:acctsChanged -and -not $Demo) { $script:lastTry = [DateTime]::MinValue; Start-Refresh }
+  $script:acctsChanged = $false
+  Update-SettingsButtons
+}
+
+function Show-Settings {
+  if ($settings.IsVisible) {
+    if ($settings.WindowState -eq 'Minimized') { $settings.WindowState = 'Normal' }
+    [void]$settings.Activate()
+    return
+  }
+  Start-Editing
+  Update-Settings
+  $settings.Show()
+  [void]$settings.Activate()
+}
+
+# OK keeps the edits, Cancel (and Esc, and the close button) undoes them; either way the window is only hidden, so it opens again at the size the user left it.
+function Close-Settings([bool]$keep) {
+  Stop-Editing $keep
+  $settings.Hide()
+}
+
 # Content and position are settled while the window is still fully transparent, so the first
 # frame on screen is the finished one.
-function Show-Popup([bool]$editing) {
-  Write-Trace "show (editing=$editing)"
+function Show-Popup {
+  Write-Trace 'show'
   $script:pendingHide = $false
   $hideTimer.Stop()
-  if ($editing) { Start-Editing } else { $script:editing = $false }
   $popup.BeginAnimation([Windows.Window]::OpacityProperty, $null)
   $popup.Opacity = 0
-  Update-Popup
+  Update-Popup -ListOnly
   Set-PopupPosition
   $popup.Show()
   [void]$popup.Activate()
   Start-PopupEntrance
+  Start-Raise
 }
 
-# Clicking away keeps settings changes; only Cancel and Esc throw them away.
 # Windows re-shows a transparent window's last drawn frame when it reappears, so before hiding
-# the popup goes back to the main list at zero opacity, and only hides once that frame is drawn.
+# the popup goes to zero opacity and only hides once that frame is drawn. Nothing is rebuilt on the way out.
 $script:pendingHide = $false
 $hideTimer = New-Object Windows.Threading.DispatcherTimer
 $hideTimer.Interval = [TimeSpan]::FromMilliseconds(80)
@@ -1902,34 +2007,43 @@ $hideTimer.Add_Tick({
 function Hide-Popup {
   Write-Trace "hide requested: visible=$($popup.IsVisible) pending=$($script:pendingHide)"
   if (-not $popup.IsVisible -or $script:pendingHide) { return }
-  Stop-Editing $true
   $popup.BeginAnimation([Windows.Window]::OpacityProperty, $null)
   $popup.Opacity = 0
-  Update-Popup
   $script:pendingHide = $true
   $hideTimer.Start()
+  Start-Raise
 }
 
 $script:popupClosedAt = [DateTime]::MinValue
-$popup.Add_Deactivated({ Write-Trace 'popup deactivated'; if ($script:modal) { return }; Hide-Popup; $script:popupClosedAt = Get-Date })
+$popup.Add_Deactivated({ Write-Trace 'popup deactivated'; Hide-Popup; $script:popupClosedAt = Get-Date })
 $popup.Add_Activated({ Write-Trace 'popup activated' })
 $popup.Add_KeyDown({
   param($s, $e)
-  if ($e.Key -ne 'Escape') { return }
-  if ($script:editing) { Switch-PopupMode { Stop-Editing $false } } else { Hide-Popup }
+  if ($e.Key -eq 'Escape') { Hide-Popup }
 })
 $PopupEls.RefreshBtn.Add_Click({ Start-Refresh })
 $PopupEls.UpdBtn.Add_Click({ Invoke-UpdateNow })
 $PopupEls.UpdCheckBtn.Add_Click({ Start-UpdateCheck -Manual })
-$PopupEls.EditBtn.Add_Click({ Switch-PopupMode { Start-Editing } })
-$PopupEls.SaveBtn.Add_Click({ Switch-PopupMode { Stop-Editing $true } })
-$PopupEls.CancelBtn.Add_Click({ Switch-PopupMode { Stop-Editing $false } })
+$PopupEls.EditBtn.Add_Click({ Hide-Popup; Show-Settings })
+$PopupEls.SOkBtn.Add_Click({ Close-Settings $true })
+$PopupEls.SCancelBtn.Add_Click({ Close-Settings $false })
+$PopupEls.SApplyBtn.Add_Click({ Save-Editing })
+$settings.Add_Closing({ param($s, $e) if ($script:exiting) { return }; $e.Cancel = $true; Close-Settings $false })
+$settings.Add_SourceInitialized({ if (-not $isLight) { [CuwNative]::DarkTitleBar((New-Object Windows.Interop.WindowInteropHelper($settings)).Handle) } })
+$widget.Add_Closing({ $script:exiting = $true })
+$settings.Add_KeyDown({ param($s, $e) if ($e.Key -eq 'Escape') { Close-Settings $false } })
+$script:exiting = $false
+foreach ($t in 'acct', 'disp', 'cap', 'upd') {
+  $PopupEls["Tab_$t"].Tag = $t
+  $PopupEls["Tab_$t"].Add_Checked({ param($s) if ($script:tab -ne $s.Tag) { $script:tab = $s.Tag; Update-Settings } })
+}
 
-# Rebuilding the list while someone types in it would steal their focus, so edits wait.
+# Settings, once opened, is only ever hidden. The list is rebuilt freely; Settings only when asked
+# (a refresh finishing must not rebuild it under someone typing).
 function Update-All {
   Update-Widget
-  if ($popup.IsVisible -and (-not $script:editing -or $script:forcePopup)) { Update-Popup }
-  elseif ($popup.IsVisible) { Update-RefreshButton }
+  if ($popup.IsVisible) { Update-Popup -ListOnly }
+  if ($script:forcePopup -and $script:editing -and $settings.IsVisible -and -not ([Windows.Input.Keyboard]::FocusedElement -is [Windows.Controls.Primitives.TextBoxBase])) { Update-Settings }
   $script:forcePopup = $false
 }
 
@@ -1957,7 +2071,7 @@ $widget.Add_MouseLeftButtonUp({
   if ($popup.IsVisible -and -not $script:pendingHide) { Hide-Popup; return }
   # Clicking the widget first deactivates (and hides) an open list; don't reopen it straight away.
   if (((Get-Date) - $script:popupClosedAt).TotalMilliseconds -lt 300) { return }
-  Show-Popup $false
+  Show-Popup
 })
 
 function New-MenuItem($header, $action) {
@@ -1968,9 +2082,9 @@ function New-MenuItem($header, $action) {
 }
 $menu = New-Object Windows.Controls.ContextMenu
 $refreshItem = New-MenuItem 'Refresh now' { Start-Refresh }
-$scanItem = New-MenuItem 'Scan for accounts' { Start-Refresh -Discover; Show-Popup $false }
+$scanItem = New-MenuItem 'Scan for accounts' { Start-Refresh -Discover; Show-Popup }
 [void]$menu.Items.Add($refreshItem)
-[void]$menu.Items.Add((New-MenuItem "Settings$ELL" { Show-Popup $true }))
+[void]$menu.Items.Add((New-MenuItem "Settings$ELL" { Show-Settings }))
 [void]$menu.Items.Add($scanItem)
 [void]$menu.Items.Add((New-MenuItem "Open config file$ELL" {
   if (-not (Test-Path $ConfigPath)) { Save-UiConfig }
@@ -2004,10 +2118,10 @@ $widget.ContextMenu = $menu
 
 # ---------------------------------------------------------------- snapshot (README images)
 
-function Save-Snapshot([bool]$editing, [string]$file, [scriptblock]$after) {
-  $script:editing = $editing
+function Save-Snapshot([string]$file, [scriptblock]$after) {
+  $script:editing = $false
   Update-Widget
-  Update-Popup
+  Update-Popup -ListOnly
   if ($after) { & $after }
   foreach ($el in $WidgetEls.Root, $PopupEls.Card) {
     if ($el.Parent -is [Windows.Window]) { $el.Parent.Content = $null }
@@ -2052,6 +2166,35 @@ function Save-Snapshot([bool]$editing, [string]$file, [scriptblock]$after) {
   $scene.FindName('CardSlot').Content = $null
 }
 
+# The Settings window's content at its default size, rendered at $scale display scaling (no window frame).
+function Save-SettingsSnapshot([string]$file, [double]$scale, [scriptblock]$after) {
+  $script:editing = $true
+  if (-not $script:configBackup) { $script:configBackup = $script:config | ConvertTo-Json -Depth 8 }
+  Update-Widget
+  Update-Settings
+  if ($after) { & $after }
+  $dpi = New-Object Windows.DpiScale($scale, $scale)
+  $grid = $settings.Content
+  $settings.Content = $null
+  $shot = New-Object Windows.Controls.Border -Property @{ Width = $settings.Width; Height = $settings.Height; Background = $Theme.card; Child = $grid }
+  $shot.Resources.MergedDictionaries.Add($PopupEls.Card.Resources)
+  $shot.SetValue([Windows.Documents.TextElement]::ForegroundProperty, (New-Object Windows.Media.BrushConverter).ConvertFromString($Theme.fg))
+  $shot.SetValue([Windows.Documents.TextElement]::FontFamilyProperty, (New-Object Windows.Media.FontFamily('Segoe UI Variable Text, Segoe UI')))
+  $shot.UseLayoutRounding = $true
+  [Windows.Media.VisualTreeHelper]::SetRootDpi($shot, $dpi)
+  $shot.Measure((New-Object Windows.Size($settings.Width, $settings.Height)))
+  $shot.Arrange((New-Object Windows.Rect(0, 0, $settings.Width, $settings.Height)))
+  $shot.UpdateLayout()
+  $rtb = New-Object Windows.Media.Imaging.RenderTargetBitmap([int][Math]::Ceiling($settings.Width * $scale), [int][Math]::Ceiling($settings.Height * $scale), (96 * $scale), (96 * $scale), ([Windows.Media.PixelFormats]::Pbgra32))
+  $rtb.Render($shot)
+  $enc = New-Object Windows.Media.Imaging.PngBitmapEncoder
+  $enc.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($rtb))
+  $fs = [IO.File]::Create($file)
+  try { $enc.Save($fs) } finally { $fs.Close() }
+  $shot.Child = $null
+  $settings.Content = $grid
+}
+
 # The taskbar strip alone, laid out and rendered as at $scale display scaling, with an optional tooltip above it.
 function Save-BarSnapshot([string]$file, [double]$scale, [string]$tip) {
   $dpi = New-Object Windows.DpiScale($scale, $scale)
@@ -2093,13 +2236,61 @@ function Save-BarSnapshot([string]$file, [double]$scale, [string]$tip) {
   $scene.FindName('TipSlot').Content = $null
 }
 
+# Renders $el (8 px per DIP) and measures how many degrees of the circle of radius $r (DIP) around ($c, $c) are
+# painted by an opaque stroke, and how many of those fall inside the expected sweep from 12 o'clock.
+function Measure-RingSweep($el, [double]$r, [double]$c, [double]$expected) {
+  $k = 8
+  $host2 = New-Object Windows.Controls.Border -Property @{ Child = $el }
+  $host2.Measure((New-Object Windows.Size([double]::PositiveInfinity, [double]::PositiveInfinity)))
+  $host2.Arrange((New-Object Windows.Rect($host2.DesiredSize)))
+  $host2.UpdateLayout()
+  $w = [int][Math]::Ceiling($host2.ActualWidth * $k); $h = [int][Math]::Ceiling($host2.ActualHeight * $k)
+  $rtb = New-Object Windows.Media.Imaging.RenderTargetBitmap($w, $h, (96 * $k), (96 * $k), ([Windows.Media.PixelFormats]::Pbgra32))
+  $rtb.Render($host2)
+  $buf = New-Object byte[] ($w * $h * 4)
+  $rtb.CopyPixels($buf, $w * 4, 0)
+  $host2.Child = $null
+  $step = 0.25; $total = 0; $inside = 0
+  for ($a = 0.0; $a -lt 360; $a += $step) {
+    $rad = $a * [Math]::PI / 180
+    $x = [int][Math]::Floor(($c + $r * [Math]::Sin($rad)) * $k); $y = [int][Math]::Floor(($c - $r * [Math]::Cos($rad)) * $k)
+    if ($buf[($y * $w + $x) * 4 + 3] -ge 128) { $total++; if ($a -lt $expected) { $inside++ } }
+  }
+  [pscustomobject]@{ total = $total * $step; inside = $inside * $step }
+}
+
+if ($RingCheck) {
+  Set-DemoData
+  $script:config | Add-Member -Force showCaptions $false
+  $failed = 0
+  foreach ($dpiScale in 1, 1.25, 1.5) {
+    [Windows.Media.VisualTreeHelper]::SetRootDpi($widget, (New-Object Windows.DpiScale($dpiScale, $dpiScale)))
+    foreach ($pct in 0, 25, 50, 91, 100) {
+      $sz = Get-RingSize; $in = Get-RingSize $RingInnerDip
+      $combined = New-CombinedElement ([pscustomobject]@{ pie = '5h' }) ([pscustomobject]@{ five_h = [pscustomobject]@{ pct = $pct; reset = $null }; seven_d = [pscustomobject]@{ pct = $pct; reset = $null } }) 'Ab'
+      $expected = $pct * 3.6
+      $m = Measure-RingSweep (New-RingElement $pct 'x' $false '') (($sz - $RingThick) / 2) ($sz / 2) $expected
+      $m2 = Measure-RingSweep $combined (($sz - $RingThick) / 2) ($sz / 2) $expected
+      $m3 = Measure-RingSweep (New-CombinedElement ([pscustomobject]@{ pie = '5h' }) ([pscustomobject]@{ five_h = [pscustomobject]@{ pct = $pct; reset = $null }; seven_d = [pscustomobject]@{ pct = 0; reset = $null } }) 'Ab') (($in - $RingInnerThick) / 2) ($sz / 2) $expected
+      foreach ($row in @(@('ring', $m), @('combined outer', $m2), @('combined inner', $m3))) {
+        $ok = [Math]::Abs($row[1].total - $expected) -le 1.0 -and [Math]::Abs($row[1].inside - $expected) -le 1.0
+        if (-not $ok) { $failed++ }
+        '{0,-15} dpi {1,-4} {2,3}%  expected {3,6:0.0} deg  painted {4,6:0.0}  in place {5,6:0.0}  {6}' -f $row[0], $dpiScale, $pct, $expected, $row[1].total, $row[1].inside, $(if ($ok) { 'PASS' } else { 'FAIL' })
+      }
+    }
+  }
+  if ($failed) { "$failed ring check(s) FAILED"; exit 1 }
+  'all ring checks passed'
+  exit 0
+}
+
 if ($Snapshot) {
   New-Item -ItemType Directory -Force $Snapshot | Out-Null
   Set-DemoData
   Set-DemoUpdate
-  Save-Snapshot $false (Join-Path $Snapshot 'widget.png')
-  Save-Snapshot $true (Join-Path $Snapshot 'settings.png')
-  # Settings tabs with five accounts and a new-account notice (used to check the layout; not part of the README).
+  Save-Snapshot (Join-Path $Snapshot 'widget.png')
+  Save-SettingsSnapshot (Join-Path $Snapshot 'settings.png') 1
+  # Settings tabs with five accounts and a new-account notice, at 100% and 150% display scaling (used to check the layout).
   $script:config.accounts = @($script:config.accounts) + @(
     [pscustomobject]@{ name = 'cs'; label = 'CasinoStreamers'; plan = ''; source = 'xndr-claude' }
     [pscustomobject]@{ name = 'node'; label = 'Node'; plan = ''; source = 'xndr-claude' }
@@ -2107,20 +2298,22 @@ if ($Snapshot) {
   Set-DemoFound
   $script:found = @($script:found | Select-Object -First 1)
   Update-NewAccts
-  foreach ($t in 'acct', 'disp', 'cap', 'upd') {
-    $script:tab = $t
-    Save-Snapshot $true (Join-Path $Snapshot "settings-tab-$t.png")
+  foreach ($scale in 1, 1.5) {
+    foreach ($t in 'acct', 'disp', 'cap', 'upd') {
+      $script:tab = $t
+      Save-SettingsSnapshot (Join-Path $Snapshot "settings-tab-$t-$([int]($scale * 100)).png") $scale
+    }
   }
   $script:tab = 'acct'; $script:newAccts = @()
   # Account tools open (used to check the layout; not part of the README).
   Set-DemoFound
   $script:acctMode = 'find'
-  Save-Snapshot $true (Join-Path $Snapshot 'settings-find.png')
+  Save-SettingsSnapshot (Join-Path $Snapshot 'settings-find.png') 1
   $script:acctMode = 'add'
-  Save-Snapshot $true (Join-Path $Snapshot 'settings-add.png')
+  Save-SettingsSnapshot (Join-Path $Snapshot 'settings-add.png') 1
   # Token mode with the approval line open (fake value).
   $script:nf = @{ label = 'Side project'; src = 'token'; input = ''; plan = '' }
-  Save-Snapshot $true (Join-Path $Snapshot 'settings-add-token.png') {
+  Save-SettingsSnapshot (Join-Path $Snapshot 'settings-add-token.png') 1 {
     $script:nfEls.token.Password = 'sk-ant-oat01-FAKEFAKEFAKE'
     $script:nfEls.label.Text = 'Side project'
     Invoke-AddAccount
@@ -2137,7 +2330,7 @@ if ($Snapshot) {
   foreach ($c in Get-AcctCfgs) { Set-AcctProp $c.name 'taskbar' $true; Set-AcctProp $c.name 'style' 'combined' }
   $script:config | Add-Member -Force showNames $false
   $script:config | Add-Member -Force showPercents $false
-  Save-Snapshot $false (Join-Path $Snapshot 'widget-nopct.png')
+  Save-Snapshot (Join-Path $Snapshot 'widget-nopct.png')
   foreach ($scale in 1, 1.25, 1.5) {
     foreach ($pcts in $true, $false) {
       $script:config | Add-Member -Force showPercents $pcts
@@ -2147,6 +2340,19 @@ if ($Snapshot) {
   }
   foreach ($c in Get-AcctCfgs) { Set-AcctProp $c.name 'style' 'rings' }
   Save-BarSnapshot (Join-Path $Snapshot 'bar-rings-nopct-125.png') 1.25 $null
+  # Known values: 91 / 50 / 25 and 100 / 0 (compare with the arcs; -RingCheck measures them).
+  foreach ($c in Get-AcctCfgs) { Set-AcctProp $c.name 'taskbar' ($c.name -in 'personal', 'work') }
+  Set-AcctProp 'personal' 'limits' @('5h', '7d', 'fable')
+  Set-AcctProp 'work' 'limits' @('5h', '7d')
+  $known = @{ personal = @(91, 50, 25); work = @(100, 0, $null) }
+  foreach ($n in $known.Keys) {
+    $r = Get-Result $n
+    $r.five_h = & $mkWin $known[$n][0] 95; $r.seven_d = & $mkWin $known[$n][1] 3000
+    $r.fable = if ($null -ne $known[$n][2]) { & $mkWin $known[$n][2] 3000 } else { & $mkWin $null 3000 }
+  }
+  $script:config | Add-Member -Force showNames $true
+  $script:config | Add-Member -Force showPercents $true
+  foreach ($scale in 1, 1.25, 1.5) { Save-BarSnapshot (Join-Path $Snapshot "bar-known-$([int]($scale * 100)).png") $scale $null }
   exit
 }
 
