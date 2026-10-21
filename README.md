@@ -7,6 +7,12 @@
 **Your Claude 5-hour, 7-day and Fable limits as small rings on the Windows 11 taskbar.**
 One account or several, updated in the background, in one click.
 
+**Install:** paste in PowerShell
+
+```powershell
+irm https://github.com/mrcsXndr/claude-usage-widget/releases/latest/download/install.ps1 | iex
+```
+
 [![Release](https://img.shields.io/github/v/release/mrcsXndr/claude-usage-widget?color=D97757)](https://github.com/mrcsXndr/claude-usage-widget/releases/latest)
 [![Windows 11](https://img.shields.io/badge/Windows-11-0078D4?logo=windows11&logoColor=white)](#install)
 [![No dependencies](https://img.shields.io/badge/dependencies-none-4CC38A)](#how-it-works)
