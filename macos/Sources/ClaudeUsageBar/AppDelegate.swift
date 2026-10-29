@@ -59,12 +59,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
             self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
 
         // Check once a minute whether a refresh is due; this also keeps tooltips' countdowns fresh.
-        tickTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.store.refreshIfDue()
-                self?.updateTooltip()
-            }
-        }
+        // Selector-based so the callback stays on the main thread (a closure here trips Swift's concurrency checks).
+        tickTimer = Timer.scheduledTimer(timeInterval: 60, target: self, selector: #selector(tick),
+                                         userInfo: nil, repeats: true)
         tickTimer?.tolerance = 10
 
         redraw()
@@ -84,6 +81,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
 
     private func updateTooltip() {
         statusItem?.button?.toolTip = RingRenderer.tooltip(accounts: store.menuBarAccounts, usage: store.usage)
+    }
+
+    @objc private func tick() {
+        store.refreshIfDue()
+        updateTooltip()
     }
 
     @objc private func appearanceChanged() {
