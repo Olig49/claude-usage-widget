@@ -9,7 +9,9 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # Intel pool: the Apple Silicon (arm64) runners were out of capacity. The app is still built universal.
+    runs-on: macos-15-intel
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: macos
