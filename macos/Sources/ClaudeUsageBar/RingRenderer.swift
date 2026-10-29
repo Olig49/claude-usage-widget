@@ -61,7 +61,7 @@ enum RingRenderer {
         case divider
         case text([TextLine])
         case ring(pct: Double?, state: DialState, inside: String?, m: Metrics)
-        case dial(outer: Double?, inner: Double?, state: DialState, innerAsRing: Bool, m: Metrics)
+        case dial(outer: Double?, inner: Double?, innerAsRing: Bool, inside: String?, m: Metrics)
 
         func width() -> CGFloat {
             switch self {
@@ -131,8 +131,10 @@ enum RingRenderer {
             let pieKey = c.pieKey(for: a)
             let ringKey: LimitKey = pieKey == .fiveHour ? .sevenDay : .fiveHour
             let pieW = u.window(pieKey, now: now), ringW = u.window(ringKey, now: now)
-            var pieces: [Piece] = [.dial(outer: ringW.pct, inner: pieW.pct, state: .value,
-                                         innerAsRing: inside == .percent, m: m)]
+            // Same as Windows: with percentages a pie fills the middle; otherwise an inner ring,
+            // with the initials in the centre when Inside is Initials.
+            var pieces: [Piece] = [.dial(outer: ringW.pct, inner: pieW.pct, innerAsRing: inside != .percent,
+                                         inside: inside == .initials ? initials : nil, m: m)]
             if next != .none || m.twoRows {
                 let font = NSFont.monospacedDigitSystemFont(ofSize: min(m.nextFont, 9), weight: .bold)
                 let lines = [LimitKey.fiveHour, .sevenDay].map { k -> TextLine in
@@ -234,7 +236,7 @@ enum RingRenderer {
                 (text as NSString).draw(at: NSPoint(x: rect.midX - s.width / 2, y: rect.midY - s.height / 2),
                                         withAttributes: [.font: font, .foregroundColor: color])
             }
-        case .dial(let outer, let inner, _, let innerAsRing, let m):
+        case .dial(let outer, let inner, let innerAsRing, let inside, let m):
             let rect = NSRect(x: x, y: (height - m.ring) / 2, width: m.ring, height: m.ring)
             drawTrack(rect, thick: m.thick)
             drawArc(rect, pct: outer, thick: m.thick)
@@ -245,6 +247,12 @@ enum RingRenderer {
             if innerAsRing {
                 drawTrack(innerRect, thick: m.innerThick)
                 drawArc(innerRect, pct: inner, thick: m.innerThick)
+                if let inside, !inside.isEmpty {
+                    let font = NSFont.systemFont(ofSize: max(5, m.inFont - 1.5), weight: .bold)
+                    let s = textSize(inside, font)
+                    (inside as NSString).draw(at: NSPoint(x: rect.midX - s.width / 2, y: rect.midY - s.height / 2),
+                                              withAttributes: [.font: font, .foregroundColor: NSColor.labelColor])
+                }
             } else {
                 NSColor.labelColor.withAlphaComponent(0.15).setFill()
                 NSBezierPath(ovalIn: innerRect).fill()

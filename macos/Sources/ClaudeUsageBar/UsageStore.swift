@@ -130,6 +130,13 @@ final class UsageStore: ObservableObject {
             TokenStore.delete(account: a.name)
         }
         let accountsChanged = d.accounts != config.accounts
+        // A changed login, token source or Fable choice must not reuse what was learned about the old one.
+        for a in d.accounts {
+            if let old = config.accounts.first(where: { $0.name == a.name }),
+               old.source != a.source || old.dir != a.dir || old.command != a.command || old.fable != a.fable {
+                fetcher.forget(a.name)
+            }
+        }
         config = d
         save()
         draft = d
@@ -145,6 +152,12 @@ final class UsageStore: ObservableObject {
     /// Adds an account at once (saved immediately, like the Windows widget's approved token),
     /// storing a pasted token in the Keychain first.
     func addAccount(_ account: AccountConfig, token: String?) throws {
+        var account = account
+        // Never two accounts with one name (e.g. re-adding a login removed in an unapplied draft).
+        if config.accounts.contains(where: { $0.name == account.name })
+            || (draft?.accounts.contains(where: { $0.name == account.name }) ?? false) {
+            account.name = uniqueName(from: account.name)
+        }
         if let token {
             try TokenStore.save(token.trimmingCharacters(in: .whitespacesAndNewlines), account: account.name)
         }
@@ -207,7 +220,7 @@ final class UsageStore: ObservableObject {
             scanning = false
             notice = firstRun ? nil
                 : (added == 0 ? "No new Claude Code logins found" : "Added \(added) account\(added == 1 ? "" : "s")")
-            refresh()
+            refresh(force: true)
         }
     }
 
@@ -225,7 +238,8 @@ final class UsageStore: ObservableObject {
         updateStatus = manual ? "Checking\u{2026}" : updateStatus
         Task {
             let latest = await UpdateChecker.latest()
-            UserDefaults.standard.set(Date(), forKey: lastUpdateCheckKey)
+            // Offline or rate-limited: try again at the next tick instead of waiting a day.
+            if latest != nil { UserDefaults.standard.set(Date(), forKey: lastUpdateCheckKey) }
             if let latest, UpdateChecker.isNewer(latest.version, than: AppInfo.version) {
                 update = latest
                 updateStatus = "Version \(latest.version) is available."

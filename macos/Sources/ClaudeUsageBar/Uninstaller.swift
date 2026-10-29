@@ -19,9 +19,7 @@ enum Uninstaller {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         loginItem.setEnabled(false)
-        for a in store.config.accounts where a.sourceKind == .token {
-            TokenStore.delete(account: a.name)
-        }
+        TokenStore.deleteAll()
         try? FileManager.default.removeItem(at: store.configStore.directory)
         UserDefaults.standard.removePersistentDomain(forName: Bundle.main.bundleIdentifier ?? "")
 

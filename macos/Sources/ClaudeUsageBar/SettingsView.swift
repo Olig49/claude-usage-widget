@@ -255,7 +255,7 @@ private struct AccountDetail: View {
                         Text(cfg.caption(.fiveHour)).tag(LimitKey.fiveHour.rawValue)
                         Text(cfg.caption(.sevenDay)).tag(LimitKey.sevenDay.rawValue)
                     }
-                    Text("The middle limit is a pie (an inner ring when percentages are inside the rings); the outer ring is the other window.")
+                    Text("The middle limit is a pie when percentages are inside the rings, otherwise an inner ring (with the initials in the centre). The outer ring is the other window.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

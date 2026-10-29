@@ -21,7 +21,11 @@ public enum TokenStore {
         var add = base
         add[kSecValueData as String] = Data(token.utf8)
         add[kSecAttrLabel as String] = "Claude Usage token (\(account))"
-        let status = SecItemAdd(add as CFDictionary, nil)
+        var status = SecItemAdd(add as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            // The delete above can fail on an item written by an earlier build (different signature).
+            status = SecItemUpdate(base as CFDictionary, [kSecValueData as String: Data(token.utf8)] as CFDictionary)
+        }
         guard status == errSecSuccess else { throw UsageError.keychain(message(status)) }
     }
 
@@ -39,6 +43,12 @@ public enum TokenStore {
 
     public static func delete(account: String) {
         SecItemDelete(query(account) as CFDictionary)
+    }
+
+    /// Every token this app saved (for Uninstall).
+    public static func deleteAll() {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service]
+        while SecItemDelete(q as CFDictionary) == errSecSuccess {}
     }
 
     private static func message(_ status: OSStatus) -> String {

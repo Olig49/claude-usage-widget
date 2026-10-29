@@ -240,7 +240,9 @@ public final class UsageFetcher {
                 row.error = nil
             case .invalid(let code)?:
                 row.status = .invalid
-                row.error = "Token invalid (HTTP \(code)): sign in to Claude Code again"
+                row.error = account.sourceKind == .claudeCode
+                    ? "Token invalid (HTTP \(code)): sign in to Claude Code again"
+                    : "Token invalid (HTTP \(code)): replace it in Settings > Accounts"
             case .failed(let msg)?:
                 row.error = msg
             case .retry(let code)?:

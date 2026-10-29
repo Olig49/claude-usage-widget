@@ -16,7 +16,9 @@ final class SettingsController: NSObject, NSWindowDelegate {
     }
 
     func show() {
-        if let window, window.isVisible {
+        // A window here means Settings is open (closing clears it), even when minimised.
+        if let window {
+            if window.isMiniaturized { window.deminiaturize(nil) }
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             return
