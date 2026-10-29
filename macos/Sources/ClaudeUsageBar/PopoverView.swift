@@ -5,12 +5,15 @@ import UsageCore
 struct PopoverActions {
     var refresh: () -> Void
     var scan: () -> Void
+    var settings: () -> Void
     var openConfig: () -> Void
     var openLog: () -> Void
+    var openUpdate: () -> Void
     var quit: () -> Void
 }
 
 /// The dropdown: every account with its 5h / 7d / Fable usage and reset countdowns.
+@MainActor
 struct PopoverView: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var loginItem: LoginItem
@@ -22,11 +25,12 @@ struct PopoverView: View {
             content(now: context.date)
         }
         .padding(14)
-        .frame(width: 330)
+        .frame(width: 340)
     }
 
     @ViewBuilder
     private func content(now: Date) -> some View {
+        let cfg = store.effective
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Claude usage").font(.headline)
@@ -36,21 +40,36 @@ struct PopoverView: View {
                 }
             }
 
+            if let update = store.update {
+                Button(action: actions.openUpdate) {
+                    Label("Version \(update.version) is available", systemImage: "arrow.down.circle")
+                        .font(.callout)
+                }
+                .buttonStyle(.link)
+            }
+
             let accounts = store.visibleAccounts
             if accounts.isEmpty {
                 Text(store.scanning
                      ? "Looking for Claude Code logins\u{2026}"
-                     : "No Claude Code logins found. Sign in with claude in Terminal, then choose Scan for accounts.")
+                     : "No accounts yet. Sign in with claude in Terminal and choose Scan for accounts, or add a token in Settings.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            ForEach(Array(accounts.enumerated()), id: \.element.name) { index, account in
-                if index > 0 { Divider() }
-                AccountCard(account: account, usage: store.usage[account.name], now: now) { on in
-                    store.setInMenuBar(account.name, on)
+            // A scroll view only when the list is long, so short lists size the popover to fit.
+            if accounts.count > 4 {
+                ScrollView {
+                    accountList(accounts, config: cfg, now: now).padding(.trailing, 6)
                 }
+                .frame(height: 460)
+            } else {
+                accountList(accounts, config: cfg, now: now)
+            }
+
+            if cfg.showLegend == true {
+                LegendView()
             }
 
             if let notice = store.notice {
@@ -60,7 +79,7 @@ struct PopoverView: View {
             Divider()
 
             HStack(spacing: 10) {
-                Text(updatedText(now: now))
+                Text(updatedText(now: now, config: cfg))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -71,7 +90,15 @@ struct PopoverView: View {
                 .disabled(store.refreshing || !store.canRefreshManually(now: now))
                 .help("Refresh now (at most once a minute)")
 
+                Button(action: actions.settings) {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut(",", modifiers: .command)
+                .help("Settings")
+
                 Menu {
+                    Button("Settings\u{2026}", action: actions.settings)
                     Button("Scan for accounts", action: actions.scan)
                     Toggle("Launch at login", isOn: Binding(
                         get: { loginItem.isEnabled },
@@ -83,7 +110,7 @@ struct PopoverView: View {
                     Divider()
                     Button("Quit Claude Usage", action: actions.quit)
                 } label: {
-                    Image(systemName: "gearshape")
+                    Image(systemName: "ellipsis.circle")
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -93,19 +120,37 @@ struct PopoverView: View {
         }
     }
 
-    private func updatedText(now: Date) -> String {
+    @ViewBuilder
+    private func accountList(_ accounts: [AccountConfig], config: AppConfig, now: Date) -> some View {
+        let shown = Set(store.menuBarAccounts(now: now).map(\.name))
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(accounts.enumerated()), id: \.element.name) { index, account in
+                if index > 0 { Divider() }
+                AccountCard(account: account, usage: store.usage[account.name], config: config, now: now,
+                            inMenuBar: shown.contains(account.name)) { on in
+                    store.setInMenuBar(account.name, on)
+                }
+            }
+        }
+    }
+
+    private func updatedText(now: Date, config: AppConfig) -> String {
         if store.refreshing { return "Refreshing\u{2026}" }
         guard let last = store.lastRefresh else { return "Not updated yet" }
         let mins = Int(now.timeIntervalSince(last) / 60)
         let ago = mins < 1 ? "just now" : (mins < 60 ? "\(mins) min ago" : "\(mins / 60) h ago")
-        return "Updated \(ago) \u{00B7} every \(store.config.effectiveRefreshMinutes) min"
+        return "Updated \(ago) \u{00B7} every \(config.effectiveRefreshMinutes) min"
     }
 }
 
+@MainActor
 private struct AccountCard: View {
     let account: AccountConfig
     let usage: AccountUsage?
+    let config: AppConfig
     let now: Date
+    /// Shown in the menu bar right now (ticked, or the first account when none is ticked).
+    let inMenuBar: Bool
     let onToggle: (Bool) -> Void
 
     var body: some View {
@@ -118,11 +163,13 @@ private struct AccountCard: View {
                         .truncationMode(.middle)
                 }
                 .toggleStyle(.checkbox)
-                .help("Show in the menu bar")
+                .help(inMenuBar && account.menuBar != true
+                      ? "Shown in the menu bar because no account is ticked"
+                      : "Show in the menu bar")
 
                 Spacer(minLength: 4)
 
-                if let plan = usage?.plan ?? account.plan {
+                if let plan = usage?.plan ?? account.plan, !plan.isEmpty {
                     Text(plan)
                         .font(.caption2.weight(.medium))
                         .padding(.horizontal, 6)
@@ -139,12 +186,12 @@ private struct AccountCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     ForEach(LimitKey.allCases, id: \.self) { key in
-                        let w = u.window(key)
+                        let w = u.window(key, now: now)
                         if let pct = w.pct {
-                            LimitRow(key: key, pct: pct, reset: w.reset, now: now)
+                            LimitRow(caption: config.caption(key), longName: key.longName, pct: pct, reset: w.reset, now: now)
                         }
                     }
-                    if u.status == .limited {
+                    if u.isAtLimit(now: now) {
                         Text("At the limit").font(.caption).foregroundStyle(.red)
                     }
                 }
@@ -156,15 +203,18 @@ private struct AccountCard: View {
     }
 
     private var helpText: String {
-        guard let u = usage, let method = u.method else { return account.displayName }
-        return method == "usage-api"
+        guard let u = usage, let method = u.method else { return TokenSource.describe(account) }
+        let how = method == "usage-api"
             ? "Read with the free usage API"
-            : "Read with a 1-token probe (this login can't use the usage API)"
+            : "Read with a 1-token probe (this token can't use the usage API)"
+        return "\(TokenSource.describe(account))\n\(how)"
     }
 }
 
+@MainActor
 private struct LimitRow: View {
-    let key: LimitKey
+    let caption: String
+    let longName: String
     let pct: Double
     let reset: Date?
     let now: Date
@@ -172,9 +222,10 @@ private struct LimitRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                Text(key.caption)
+                Text(caption)
                     .font(.caption.weight(.medium))
-                    .frame(width: 36, alignment: .leading)
+                    .lineLimit(1)
+                    .frame(width: 44, alignment: .leading)
                 UsageBar(fraction: pct / 100, color: barColor)
                 Text(Format.percent(pct))
                     .font(.caption.monospacedDigit().weight(.semibold))
@@ -184,21 +235,24 @@ private struct LimitRow: View {
                 Text(Format.resetLine(reset, now: now))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .padding(.leading, 44)
+                    .padding(.leading, 52)
             }
         }
-        .help(key.longName)
+        .help(longName)
     }
 
-    private var barColor: Color {
-        switch Severity(pct: pct) {
-        case .ok: return .green
-        case .warn: return .orange
-        case .high: return .red
-        }
+    private var barColor: Color { severityColor(pct) }
+}
+
+func severityColor(_ pct: Double) -> Color {
+    switch Severity(pct: pct) {
+    case .ok: return .green
+    case .warn: return .orange
+    case .high: return .red
     }
 }
 
+@MainActor
 private struct UsageBar: View {
     let fraction: Double
     let color: Color
@@ -211,5 +265,26 @@ private struct UsageBar: View {
             }
         }
         .frame(height: 6)
+    }
+}
+
+/// The colour key under the list (Display > Show legend).
+@MainActor
+struct LegendView: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            item(.green, "under 70%")
+            item(.orange, "70\u{2013}89%")
+            item(.red, "90% +")
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+    }
+
+    private func item(_ color: Color, _ text: String) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(text)
+        }
     }
 }

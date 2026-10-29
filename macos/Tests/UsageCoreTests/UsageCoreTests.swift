@@ -128,6 +128,110 @@ final class UsageCoreTests: XCTestCase {
         XCTAssertEqual(ClaudeCode.merge(found, into: &cfg), 0)
     }
 
+    // MARK: Full config
+
+    private func usage(_ name: String, five: Double, seven: Double, reset: Date? = nil) -> AccountUsage {
+        AccountUsage(name: name, label: name, status: .ok,
+                     windows: [.fiveHour: UsageWindow(pct: five, reset: reset), .sevenDay: UsageWindow(pct: seven)])
+    }
+
+    func testMenuBarFallsBackToFirstVisibleAccount() {
+        let cfg = AppConfig(accounts: [AccountConfig(name: "a", hidden: true), AccountConfig(name: "b"), AccountConfig(name: "c")])
+        XCTAssertEqual(cfg.menuBarAccounts().map(\.name), ["b"])
+    }
+
+    func testHideAtLimitKeepsAtLeastOne() {
+        var cfg = AppConfig(accounts: [AccountConfig(name: "a", menuBar: true), AccountConfig(name: "b", menuBar: true)])
+        cfg.hideAtLimit = true
+        let full = ["a": usage("a", five: 100, seven: 10), "b": usage("b", five: 20, seven: 10)]
+        XCTAssertEqual(cfg.menuBarAccounts(usage: full).map(\.name), ["b"])
+        let allFull = ["a": usage("a", five: 100, seven: 10), "b": usage("b", five: 5, seven: 100)]
+        XCTAssertEqual(cfg.menuBarAccounts(usage: allFull).map(\.name), ["a", "b"])
+    }
+
+    func testWindowThatAlreadyResetReadsZero() {
+        let now = Date(timeIntervalSince1970: 1000)
+        let u = usage("a", five: 80, seven: 10, reset: Date(timeIntervalSince1970: 900))
+        XCTAssertEqual(u.window(.fiveHour, now: now).pct, 0)
+        XCTAssertEqual(u.window(.fiveHour).pct, 80)
+    }
+
+    func testModesDefaultsAndCaptions() {
+        var cfg = AppConfig()
+        XCTAssertEqual(cfg.insideMode, .percent)
+        XCTAssertEqual(cfg.nextMode, NextMode.none)
+        XCTAssertEqual(cfg.sizeMode, .compact)
+        XCTAssertNil(cfg.namesMode)
+        cfg.inside = "bogus"
+        XCTAssertEqual(cfg.insideMode, .percent)
+        cfg.captions = ["5h": "  Session ", "7d": " "]
+        XCTAssertEqual(cfg.caption(.fiveHour), "Session")
+        XCTAssertEqual(cfg.caption(.sevenDay), "7d")
+        XCTAssertEqual(cfg.caption(.fable), "Fable")
+    }
+
+    func testPieKeyPrefersAccountChoice() {
+        var cfg = AppConfig()
+        cfg.innerWindow = "7d"
+        XCTAssertEqual(cfg.pieKey(for: AccountConfig(name: "a")), .sevenDay)
+        XCTAssertEqual(cfg.pieKey(for: AccountConfig(name: "a", pie: "5h")), .fiveHour)
+    }
+
+    func testInitialsUseShortFirst() {
+        let cfg = AppConfig(accounts: [AccountConfig(name: "a", label: "Work", short: "Xyz"),
+                                       AccountConfig(name: "b", label: "personal@x.com")])
+        XCTAssertEqual(cfg.initials(), ["a": "Xy", "b": "P"])
+    }
+
+    func testUniqueName() {
+        let cfg = AppConfig(accounts: [AccountConfig(name: "work")])
+        XCTAssertEqual(cfg.uniqueName(from: "Work"), "work-2")
+        XCTAssertEqual(cfg.uniqueName(from: "Me @ Home!"), "me-home")
+        XCTAssertEqual(cfg.uniqueName(from: "!!!"), "account")
+    }
+
+    func testLimitKeysDefaultToFiveHourAndSevenDay() {
+        XCTAssertEqual(AccountConfig(name: "a").limitKeys, [.fiveHour, .sevenDay])
+        XCTAssertEqual(AccountConfig(name: "a", limits: ["fable", "5h"]).limitKeys, [.fiveHour, .fable])
+    }
+
+    func testSetupTokenShape() {
+        XCTAssertTrue(TokenStore.looksLikeSetupToken("sk-ant-oat01-abc"))
+        XCTAssertTrue(TokenStore.looksLikeSetupToken("  sk-ant-oat01-abc\n"))
+        XCTAssertFalse(TokenStore.looksLikeSetupToken("sk-ant-api03-abc"))
+    }
+
+    func testResetFormats() {
+        let now = Date(timeIntervalSince1970: 0)
+        XCTAssertEqual(Format.resetIn(now.addingTimeInterval(5400), now: now), "in 1h 30m")
+        XCTAssertEqual(Format.resetIn(now.addingTimeInterval(-1), now: now), "")
+        XCTAssertEqual(Format.resetIn(nil, now: now), "")
+        XCTAssertEqual(Format.resetAt(now.addingTimeInterval(-1), now: now), "")
+    }
+
+    // MARK: Updates
+
+    func testUpdateParsingPicksNewestMacRelease() throws {
+        let json = """
+        [{"tag_name":"v1.9.2","html_url":"https://example.com/w","draft":false,"prerelease":false,"body":""},
+         {"tag_name":"mac-v1.2.0","html_url":"https://example.com/b","draft":false,"prerelease":true,"body":""},
+         {"tag_name":"mac-v1.1.0","html_url":"https://example.com/a","draft":false,"prerelease":false,"body":"## Fixes\\n- one"},
+         {"tag_name":"mac-v1.0.5","html_url":"https://example.com/c","draft":false,"prerelease":false,"body":""}]
+        """
+        let r = try XCTUnwrap(UpdateChecker.parse(Data(json.utf8)))
+        XCTAssertEqual(r.version, "1.1.0")
+        XCTAssertEqual(r.url.absoluteString, "https://example.com/a")
+        XCTAssertEqual(UpdateChecker.shortNotes(r.notes), "Fixes\none")
+    }
+
+    func testVersionCompare() {
+        XCTAssertTrue(UpdateChecker.isNewer("1.0.1", than: "1.0.0"))
+        XCTAssertTrue(UpdateChecker.isNewer("1.10.0", than: "1.9.9"))
+        XCTAssertFalse(UpdateChecker.isNewer("1.0.0", than: "1.0.0"))
+        XCTAssertFalse(UpdateChecker.isNewer("0.9.0", than: "1.0.0"))
+        XCTAssertFalse(UpdateChecker.isNewer("junk", than: "1.0.0"))
+    }
+
     func testConfigRoundTrip() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }

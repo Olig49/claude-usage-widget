@@ -30,6 +30,18 @@ public enum Format {
         return "Resets in \(countdown(to: date, now: now)) \u{00B7} \(resetTime(date, now: now))"
     }
 
+    /// "in 1h 34m", "in 12m", "in 3d 4h" — or "" once it has passed. (Windows: Format-ResetIn.)
+    public static func resetIn(_ date: Date?, now: Date = Date()) -> String {
+        guard let date, date > now else { return "" }
+        return "in " + countdown(to: date, now: now)
+    }
+
+    /// "15:00" today, "Sat 03:02" otherwise — or "" once it has passed. (Windows: Format-ResetAt.)
+    public static func resetAt(_ date: Date?, now: Date = Date()) -> String {
+        guard let date, date > now else { return "" }
+        return resetTime(date, now: now)
+    }
+
     public static func percent(_ pct: Double) -> String {
         "\(Int(pct.rounded()))%"
     }

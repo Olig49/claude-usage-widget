@@ -75,6 +75,22 @@ public struct AccountUsage: Equatable, Sendable {
     public func window(_ key: LimitKey) -> UsageWindow {
         windows[key] ?? .empty
     }
+
+    /// The window as it stands now: one whose reset time has passed since the last read has
+    /// started over, so it shows as 0% until the next refresh brings the real number.
+    public func window(_ key: LimitKey, now: Date) -> UsageWindow {
+        let w = window(key)
+        if w.pct != nil, let r = w.reset, r <= now { return UsageWindow(pct: 0, reset: nil) }
+        return w
+    }
+
+    /// True while the 5-hour or 7-day window is full.
+    public func isAtLimit(now: Date = Date()) -> Bool {
+        (window(.fiveHour, now: now).pct ?? 0) >= 100 || (window(.sevenDay, now: now).pct ?? 0) >= 100
+    }
+
+    /// Whether a refresh produced numbers to show.
+    public var hasData: Bool { !status.isProblem && status != .loading && !windows.isEmpty }
 }
 
 /// Ring colour bands, same as the Windows widget: green below 70%, amber below 90%, red from 90%.
@@ -90,12 +106,14 @@ public enum UsageError: Error, CustomStringConvertible {
     case network(String)
     case keychain(String)
     case timeout(String)
+    case command(String)
 
     public var description: String {
         switch self {
         case .network(let m): return "Network: \(m)"
         case .keychain(let m): return "Keychain: \(m)"
         case .timeout(let m): return "Timed out: \(m)"
+        case .command(let m): return "Token command: \(m)"
         }
     }
 }

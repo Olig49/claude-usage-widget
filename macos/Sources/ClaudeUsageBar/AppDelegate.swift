@@ -3,12 +3,13 @@ import Combine
 import SwiftUI
 import UsageCore
 
-/// Owns the menu bar item, the dropdown and the timers.
+/// Owns the menu bar item, the dropdown, the Settings window and the timers.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopoverDelegate {
     // Created in applicationDidFinishLaunching, on the main actor.
     private var store: UsageStore!
     private var loginItem: LoginItem!
+    private var settings: SettingsController!
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var cancellables = Set<AnyCancellable>()
@@ -20,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     func applicationDidFinishLaunching(_ notification: Notification) {
         store = UsageStore()
         loginItem = LoginItem()
+        settings = SettingsController(store: store, loginItem: loginItem)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.imagePosition = .imageOnly
@@ -32,8 +34,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         let actions = PopoverActions(
             refresh: { [weak self] in self?.store.refresh(manual: true) },
             scan: { [weak self] in self?.store.scan() },
+            settings: { [weak self] in self?.openSettings() },
             openConfig: { [weak self] in self?.openConfig() },
             openLog: { [weak self] in self?.openLog() },
+            openUpdate: { [weak self] in self?.openUpdatePage() },
             quit: { NSApp.terminate(nil) }
         )
         let hosting = NSHostingController(rootView: PopoverView(store: store, loginItem: loginItem, actions: actions))
@@ -43,7 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         popover.delegate = self
         popover.animates = true
 
-        // Redraw the rings whenever the data or config changes (after the change lands).
+        // Redraw the rings whenever the data, config or Settings draft changes (after the change lands).
         store.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.redraw() }
@@ -58,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
 
-        // Check once a minute whether a refresh is due; this also keeps tooltips' countdowns fresh.
+        // Once a minute: refresh when due, keep countdowns fresh, and the daily update check.
         // Selector-based so the callback stays on the main thread (a closure here trips Swift's concurrency checks).
         tickTimer = Timer.scheduledTimer(timeInterval: 60, target: self, selector: #selector(tick),
                                          userInfo: nil, repeats: true)
@@ -67,25 +71,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         redraw()
         loginItem.enableOnFirstRun()
         store.start()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.store.checkForUpdates() }
     }
 
     // MARK: Drawing
 
     private func redraw() {
         guard let button = statusItem?.button else { return }
-        let shown = store.menuBarAccounts
-        let groups = RingRenderer.groups(accounts: shown, usage: store.usage)
-        button.image = RingRenderer.image(for: groups, showPercent: store.config.showPercentInside)
+        let now = Date()
+        button.image = RingRenderer.image(config: store.effective, accounts: store.menuBarAccounts(now: now),
+                                          usage: store.usage, now: now)
         updateTooltip()
     }
 
     private func updateTooltip() {
-        statusItem?.button?.toolTip = RingRenderer.tooltip(accounts: store.menuBarAccounts, usage: store.usage)
+        statusItem?.button?.toolTip = RingRenderer.tooltip(config: store.effective, accounts: store.menuBarAccounts(),
+                                                           usage: store.usage)
     }
 
     @objc private func tick() {
         store.refreshIfDue()
-        updateTooltip()
+        store.checkForUpdates()
+        // Countdowns next to the rings and windows that just reset need a fresh image.
+        redraw()
     }
 
     @objc private func appearanceChanged() {
@@ -127,6 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         let refresh = NSMenuItem(title: "Refresh now", action: #selector(menuRefresh), keyEquivalent: "")
         refresh.isEnabled = store.canRefreshManually() && !store.refreshing
         menu.addItem(refresh)
+        menu.addItem(NSMenuItem(title: "Settings\u{2026}", action: #selector(menuSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Scan for accounts", action: #selector(menuScan), keyEquivalent: ""))
         menu.addItem(.separator())
         let login = NSMenuItem(title: "Launch at login", action: #selector(menuToggleLogin), keyEquivalent: "")
@@ -135,9 +144,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         menu.addItem(NSMenuItem(title: "Open config file\u{2026}", action: #selector(menuOpenConfig), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Open log", action: #selector(menuOpenLog), keyEquivalent: ""))
         menu.addItem(.separator())
-        let about = NSMenuItem(title: "Claude Usage \(UsageClient.version)", action: nil, keyEquivalent: "")
+        if let update = store.update {
+            menu.addItem(NSMenuItem(title: "Update available: \(update.version)\u{2026}",
+                                    action: #selector(menuOpenUpdate), keyEquivalent: ""))
+        }
+        let about = NSMenuItem(title: "Claude Usage \(AppInfo.version)", action: nil, keyEquivalent: "")
         about.isEnabled = false
         menu.addItem(about)
+        menu.addItem(NSMenuItem(title: "Uninstall\u{2026}", action: #selector(menuUninstall), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(menuQuit), keyEquivalent: "q"))
         for item in menu.items where item.action != nil { item.target = self }
         // Menus need autoenablesItems off for the manual isEnabled above to stick.
@@ -157,13 +171,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     }
 
     @objc private func menuRefresh() { store.refresh(manual: true) }
+    @objc private func menuSettings() { openSettings() }
     @objc private func menuScan() { store.scan() }
     @objc private func menuToggleLogin() { loginItem.setEnabled(!loginItem.isEnabled) }
     @objc private func menuOpenConfig() { openConfig() }
     @objc private func menuOpenLog() { openLog() }
+    @objc private func menuOpenUpdate() { openUpdatePage() }
+    @objc private func menuUninstall() { Uninstaller.confirmAndRun(store: store, loginItem: loginItem) }
     @objc private func menuQuit() { NSApp.terminate(nil) }
 
-    // MARK: Files
+    // MARK: Windows and files
+
+    private func openSettings() {
+        popover.performClose(nil)
+        settings.show()
+    }
+
+    private func openUpdatePage() {
+        popover.performClose(nil)
+        NSWorkspace.shared.open(store.update?.url ?? UpdateChecker.releasesPage)
+    }
 
     private func openConfig() {
         let url = store.configStore.configURL

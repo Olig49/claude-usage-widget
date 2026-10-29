@@ -23,8 +23,7 @@ public struct UsageClient {
     public static let fableModel = "claude-fable-5-1"
     /// OAuth tokens only reach models other than Haiku with Claude Code's system prompt.
     static let claudeCodeSystem = "You are Claude Code, Anthropic's official CLI for Claude."
-    public static let version = "0.1.0"
-    static let userAgent = "claude-usage-widget-mac/\(version) (+https://github.com/mrcsXndr/claude-usage-widget)"
+    static let userAgent = "claude-usage-widget-mac/\(AppInfo.version) (+https://github.com/mrcsXndr/claude-usage-widget)"
 
     private let session: URLSession
 
@@ -175,19 +174,14 @@ public final class UsageFetcher {
 
     public func fetch(_ account: AccountConfig) async -> AccountUsage {
         var row = AccountUsage(name: account.name, label: account.displayName, plan: account.plan, status: .error)
-        guard account.source == "claude-code" else {
-            row.error = "Source '\(account.source)' isn't supported on macOS yet"
-            return row
-        }
-
-        let login: ClaudeCodeLogin
-        switch await Self.loadLogin(dir: account.dir) {
+        let login: ResolvedToken
+        switch await Self.loadToken(account) {
         case .failure(let e):
             row.error = "\(e)"
             Log.write("\(account.name): \(e)")
             return row
         case .success(nil):
-            row.error = "Claude Code login not found"
+            row.error = account.sourceKind == .token ? "Token not found in the Keychain" : "Claude Code login not found"
             return row
         case .success(let l?):
             login = l
@@ -262,12 +256,20 @@ public final class UsageFetcher {
         return row
     }
 
-    /// Reads the login off the main thread: `security` can block while the Keychain asks the user.
-    static func loadLogin(dir: String?) async -> Result<ClaudeCodeLogin?, Error> {
+    /// Reads the token off the main thread: `security` can block while the Keychain asks the user,
+    /// and a command can take a while.
+    static func loadToken(_ account: AccountConfig) async -> Result<ResolvedToken?, Error> {
         await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .utility).async {
-                cont.resume(returning: Result { try ClaudeCode.login(dir: dir) })
+                cont.resume(returning: Result { try TokenSource.resolve(account) })
             }
         }
+    }
+
+    /// Forget what was learned about an account (e.g. after its token changed).
+    public func forget(_ name: String) {
+        probeOnly.remove(name)
+        fableOff.remove(name)
+        plans[name] = nil
     }
 }
