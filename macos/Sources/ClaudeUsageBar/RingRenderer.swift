@@ -84,7 +84,13 @@ enum RingRenderer {
         switch ring.state {
         case .value(let pct):
             let clamped = min(max(pct, 0), 100)
-            if clamped > 0 {
+            if clamped >= 100 {
+                // A 360-degree arc can collapse to nothing; draw the full circle instead.
+                let full = NSBezierPath(ovalIn: circle)
+                full.lineWidth = lineWidth
+                color(for: pct).setStroke()
+                full.stroke()
+            } else if clamped > 0 {
                 // Flat caps: round caps stick out and make the arc read larger than it is.
                 let arc = NSBezierPath()
                 arc.appendArc(withCenter: center, radius: radius, startAngle: 90,

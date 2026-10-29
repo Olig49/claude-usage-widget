@@ -25,7 +25,7 @@ jobs:
       - name: Build app
         run: |
           chmod +x scripts/*.sh
-          ./scripts/build-app.sh
+          UNIVERSAL=1 ./scripts/build-app.sh
 
       - name: Zip app
         run: ditto -c -k --keepParent "build/Claude Usage.app" "build/ClaudeUsage-macOS.zip"

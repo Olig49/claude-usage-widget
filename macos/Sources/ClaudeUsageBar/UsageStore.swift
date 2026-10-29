@@ -30,8 +30,11 @@ final class UsageStore: ObservableObject {
         Log.url = configStore.logURL
         if configStore.exists {
             reloadConfig()
+        }
+        if configStore.exists && !config.accounts.isEmpty {
             refresh()
         } else {
+            // First run, or no logins found last time: look again.
             scan(firstRun: true)
         }
     }

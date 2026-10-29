@@ -192,7 +192,7 @@ public final class UsageFetcher {
         case .success(let l?):
             login = l
         }
-        if row.plan == nil { row.plan = login.plan }
+        if let p = login.plan { row.plan = p }
         if let exp = login.expires, exp <= Date() {
             row.status = .expired
             row.error = "Login expired: open Claude Code to renew it"
@@ -215,12 +215,17 @@ public final class UsageFetcher {
             if reading == nil {
                 row.method = "probe"
                 if account.fable != false && !fableOff.contains(account.name) {
-                    let r = try await client.readProbe(token: token, model: UsageClient.fableModel)
-                    if case .failed = r {
+                    do {
+                        let r = try await client.readProbe(token: token, model: UsageClient.fableModel)
+                        if case .failed = r {
+                            fableOff.insert(account.name)
+                        } else {
+                            reading = r
+                            if case .usage(let w, _) = r, w[.fable]?.pct == nil { fableOff.insert(account.name) }
+                        }
+                    } catch {
                         fableOff.insert(account.name)
-                    } else {
-                        reading = r
-                        if case .usage(let w, _) = r, w[.fable]?.pct == nil { fableOff.insert(account.name) }
+                        Log.write("\(account.name): Fable probe failed, using Haiku: \(error)")
                     }
                 }
                 if reading == nil {

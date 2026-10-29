@@ -187,12 +187,12 @@ public enum ClaudeCode {
         var result: [AccountConfig] = []
         var seenAccounts = Set<String>()
         for dir in candidateDirs() {
-            let login: ClaudeCodeLogin?
-            do { login = try self.login(dir: dir) } catch {
+            let maybeLogin: ClaudeCodeLogin?
+            do { maybeLogin = try self.login(dir: dir) } catch {
                 Log.write("discovery: \(dir): \(error)")
                 continue
             }
-            guard let login else { continue }
+            guard maybeLogin != nil else { continue }
             let id = identity(dir: dir)
             if let uuid = id?.accountUuid {
                 if seenAccounts.contains(uuid) { continue }
@@ -210,8 +210,7 @@ public enum ClaudeCode {
                 name: name,
                 label: id?.email ?? (isDefaultDir ? "Claude Code" : URL(fileURLWithPath: dir).lastPathComponent),
                 source: "claude-code",
-                dir: isDefaultDir ? nil : dir,
-                plan: login.plan
+                dir: isDefaultDir ? nil : dir
             ))
         }
         return result

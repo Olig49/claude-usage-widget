@@ -5,7 +5,7 @@ import UsageCore
 
 /// Owns the menu bar item, the dropdown and the timers.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopoverDelegate {
     // Created in applicationDidFinishLaunching, on the main actor.
     private var store: UsageStore!
     private var loginItem: LoginItem!
@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let popover = NSPopover()
     private var cancellables = Set<AnyCancellable>()
     private var tickTimer: Timer?
+    /// When the popover last closed: the mouse-down on the icon closes a transient popover
+    /// before our mouse-up action runs, which would otherwise reopen it.
+    private var lastPopoverClose = Date.distantPast
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         store = UsageStore()
@@ -37,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hosting.sizingOptions = [.preferredContentSize]
         popover.contentViewController = hosting
         popover.behavior = .transient
+        popover.delegate = self
         popover.animates = true
 
         // Redraw the rings whenever the data or config changes (after the change lands).
@@ -107,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             popover.performClose(sender)
             return
         }
+        if Date().timeIntervalSince(lastPopoverClose) < 0.3 { return }
         store.notice = nil
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         NSApp.activate(ignoringOtherApps: true)
@@ -138,6 +143,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        lastPopoverClose = Date()
     }
 
     func menuDidClose(_ menu: NSMenu) {

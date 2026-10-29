@@ -46,7 +46,7 @@ final class UsageCoreTests: XCTestCase {
 
     // MARK: Usage API
 
-    func testParseUsageResponse() {
+    func testParseUsageResponse() throws {
         let json = """
         {"five_hour":{"utilization":42.0,"resets_at":"2026-10-29T15:00:00.123456+00:00"},
          "seven_day":{"utilization":91,"resets_at":"2026-11-02T08:00:00Z"},
@@ -61,7 +61,7 @@ final class UsageCoreTests: XCTestCase {
         XCTAssertEqual(w[.fiveHour]?.pct, 42)
         XCTAssertEqual(w[.sevenDay]?.pct, 91)
         XCTAssertEqual(w[.fable]?.pct, 12.5)
-        XCTAssertEqual(w[.fiveHour]?.reset, Date(timeIntervalSince1970: 1_793_286_000))
+        XCTAssertEqual(try XCTUnwrap(w[.fiveHour]?.reset).timeIntervalSince1970, 1_793_286_000, accuracy: 1)
         XCTAssertNotNil(w[.fable]?.reset)
     }
 
