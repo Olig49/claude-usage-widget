@@ -54,19 +54,22 @@ public struct AccountUsage: Equatable, Sendable {
     public var plan: String?
     public var status: AccountStatus
     public var error: String?
+    /// Shown with the numbers, e.g. when the login now belongs to another account.
+    public var warning: String?
     /// "usage-api" or "probe".
     public var method: String?
     public var windows: [LimitKey: UsageWindow]
     public var updated: Date?
 
     public init(name: String, label: String, plan: String? = nil, status: AccountStatus = .loading,
-                error: String? = nil, method: String? = nil,
+                error: String? = nil, warning: String? = nil, method: String? = nil,
                 windows: [LimitKey: UsageWindow] = [:], updated: Date? = nil) {
         self.name = name
         self.label = label
         self.plan = plan
         self.status = status
         self.error = error
+        self.warning = warning
         self.method = method
         self.windows = windows
         self.updated = updated

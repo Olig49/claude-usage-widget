@@ -178,6 +178,12 @@ private struct AccountCard: View {
                 }
             }
 
+            if let warning = usage?.warning {
+                Label(warning, systemImage: "person.crop.circle.badge.exclamationmark")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let u = usage {
                 if u.status.isProblem || u.windows.isEmpty {
                     Label(u.error ?? "No usage data", systemImage: "exclamationmark.triangle")

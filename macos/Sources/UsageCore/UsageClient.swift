@@ -187,9 +187,12 @@ public final class UsageFetcher {
             login = l
         }
         if let p = login.plan { row.plan = p }
+        if account.sourceKind == .claudeCode {
+            row.warning = ClaudeCode.mismatchWarning(label: account.label ?? "", signedInAs: ClaudeCode.identity(dir: account.dir)?.email)
+        }
         if let exp = login.expires, exp <= Date() {
             row.status = .expired
-            row.error = "Login expired: open Claude Code to renew it"
+            row.error = ClaudeCode.renewHint(dir: account.dir)
             return row
         }
 

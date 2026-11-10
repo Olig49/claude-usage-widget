@@ -160,6 +160,23 @@ public enum ClaudeCode {
         return nil
     }
 
+    /// What to tell the user when a row's login has expired. Opening Claude Code normally only
+    /// renews ~/.claude, so a custom dir gets the exact command.
+    public static func renewHint(dir: String?) -> String {
+        if isDefault(dir) { return "Login expired: open Claude Code to renew it" }
+        let shown = (normalize(dir!) as NSString).abbreviatingWithTildeInPath
+        return "Login expired: run CLAUDE_CONFIG_DIR=\(shown) claude in Terminal to renew it"
+    }
+
+    /// A warning when the folder is now signed in to a different account than the row's label
+    /// (e.g. after /login picked another account). Only checked when the label is an email.
+    public static func mismatchWarning(label: String, signedInAs email: String?) -> String? {
+        guard let email, !email.isEmpty, label.contains("@") else { return nil }
+        let a = label.trimmingCharacters(in: .whitespaces).lowercased()
+        let b = email.trimmingCharacters(in: .whitespaces).lowercased()
+        return a == b ? nil : "Now signed in as \(email): these numbers are that account's"
+    }
+
     /// ~/.claude and every other ~/.claude* folder (one per account via CLAUDE_CONFIG_DIR),
     /// plus CLAUDE_CONFIG_DIR itself when the app was started with it.
     public static func candidateDirs() -> [String] {

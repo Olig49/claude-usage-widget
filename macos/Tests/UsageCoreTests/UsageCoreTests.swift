@@ -244,4 +244,18 @@ final class UsageCoreTests: XCTestCase {
         XCTAssertEqual(back.effectiveRefreshMinutes, 5)
         XCTAssertEqual(back.accounts[0].limitKeys, [.fiveHour])
     }
+
+    func testMismatchWarning() {
+        XCTAssertNil(ClaudeCode.mismatchWarning(label: "a@x.com", signedInAs: "A@X.com"))
+        XCTAssertNil(ClaudeCode.mismatchWarning(label: "Work", signedInAs: "a@x.com"))
+        XCTAssertNil(ClaudeCode.mismatchWarning(label: "a@x.com", signedInAs: nil))
+        XCTAssertNotNil(ClaudeCode.mismatchWarning(label: "a@x.com", signedInAs: "b@y.com"))
+    }
+
+    func testRenewHint() {
+        XCTAssertEqual(ClaudeCode.renewHint(dir: nil), "Login expired: open Claude Code to renew it")
+        let custom = ClaudeCode.home.appendingPathComponent(".claude-personal").path
+        XCTAssertEqual(ClaudeCode.renewHint(dir: custom),
+                       "Login expired: run CLAUDE_CONFIG_DIR=~/.claude-personal claude in Terminal to renew it")
+    }
 }
